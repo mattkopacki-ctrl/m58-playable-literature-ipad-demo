@@ -6,7 +6,7 @@ def average(values):
 
     Values may contain ints or floats. At least one value is required.
     """
-    cleaned = [float(value) for value in values if value]
+    cleaned = [float(value) for value in values]
     if not cleaned:
         raise ValueError("at least one value is required")
     return round(sum(cleaned) / len(cleaned), 2)
