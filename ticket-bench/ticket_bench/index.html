@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Ticket Bench</title></head>
+<body>
+  <h1>Ticket Bench</h1>
+  <form id="avg-form">
+    <label>A <input id="a" type="number" step="any" required></label>
+    <label>B <input id="b" type="number" step="any" required></label>
+    <button type="submit">Calculate average</button>
+  </form>
+  <p>Result: <output id="result">—</output></p>
+  <script>
+    document.getElementById("avg-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const params = new URLSearchParams({
+        a: document.getElementById("a").value,
+        b: document.getElementById("b").value,
+      });
+      const res = await fetch(`/api/average?${params}`);
+      const data = await res.json();
+      document.getElementById("result").textContent = res.ok ? data.result : data.error;
+    });
+  </script>
+</body>
+</html>
