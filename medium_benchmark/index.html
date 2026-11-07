@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Metric Bench</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 680px; margin: 40px auto; padding: 0 16px; }
+    .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    input, button { font: inherit; padding: 10px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 20px; }
+    .card { border: 1px solid #8885; border-radius: 10px; padding: 12px; }
+    .value { font-size: 1.5rem; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Metric Bench</h1>
+  <p>Enter up to three observations. Blank fields are ignored; zero is a valid observation.</p>
+  <div class="row">
+    <input id="v1" type="number" step="any" placeholder="Observation 1">
+    <input id="v2" type="number" step="any" placeholder="Observation 2">
+    <input id="v3" type="number" step="any" placeholder="Observation 3">
+  </div>
+  <button id="run" type="button">Summarize</button>
+  <p id="error" role="alert"></p>
+  <div class="cards">
+    <div class="card">Provided<div id="provided" class="value">—</div></div>
+    <div class="card">Used<div id="used" class="value">—</div></div>
+    <div class="card">Average<div id="average" class="value">—</div></div>
+  </div>
+<script>
+const ids = ["v1", "v2", "v3"];
+document.querySelector("#run").addEventListener("click", async () => {
+  const params = new URLSearchParams();
+  for (const id of ids) params.append("value", document.querySelector("#" + id).value);
+  const response = await fetch("/api/summary?" + params.toString());
+  const data = await response.json();
+  document.querySelector("#error").textContent = data.error || "";
+  if (!response.ok) return;
+  document.querySelector("#provided").textContent = data.provided || "—";
+  document.querySelector("#used").textContent = data.used || "—";
+  document.querySelector("#average").textContent = data.average || "—";
+});
+</script>
+</body>
+</html>
