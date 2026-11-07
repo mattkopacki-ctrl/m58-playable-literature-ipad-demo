@@ -37,9 +37,10 @@ document.querySelector("#run").addEventListener("click", async () => {
   const data = await response.json();
   document.querySelector("#error").textContent = data.error || "";
   if (!response.ok) return;
-  document.querySelector("#provided").textContent = data.provided || "—";
-  document.querySelector("#used").textContent = data.used || "—";
-  document.querySelector("#average").textContent = data.average || "—";
+  const show = (v) => v == null ? "—" : Number.isInteger(v) ? v.toFixed(1) : String(v);
+  document.querySelector("#provided").textContent = data.provided ?? "—";
+  document.querySelector("#used").textContent = data.used ?? "—";
+  document.querySelector("#average").textContent = show(data.average);
 });
 </script>
 </body>

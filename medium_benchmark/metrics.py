@@ -5,8 +5,9 @@ def normalize_values(values):
     """Convert provided numeric values to floats, skipping missing entries."""
     cleaned = []
     for value in values:
-        if value:
-            cleaned.append(float(value))
+        if value is None or value == "":
+            continue
+        cleaned.append(float(value))
     return cleaned
 
 
