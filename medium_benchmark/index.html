@@ -37,9 +37,9 @@ document.querySelector("#run").addEventListener("click", async () => {
   const data = await response.json();
   document.querySelector("#error").textContent = data.error || "";
   if (!response.ok) return;
-  document.querySelector("#provided").textContent = data.provided || "—";
-  document.querySelector("#used").textContent = data.used || "—";
-  document.querySelector("#average").textContent = data.average || "—";
+  document.querySelector("#provided").textContent = data.provided ?? "—";
+  document.querySelector("#used").textContent = data.used ?? "—";
+  document.querySelector("#average").textContent = data.average ?? "—";
 });
 </script>
 </body>

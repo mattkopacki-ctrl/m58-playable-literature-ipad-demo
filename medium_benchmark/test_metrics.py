@@ -10,6 +10,12 @@ class MetricTests(unittest.TestCase):
     def test_missing_values_are_ignored(self):
         self.assertEqual(normalize_values([1, None, 3]), [1.0, 3.0])
 
+    def test_zero_is_a_valid_observation(self):
+        self.assertEqual(summary([0, 10, None]), {"provided": 3, "used": 2, "average": 5.0})
+
+    def test_zero_is_a_valid_only_observation(self):
+        self.assertEqual(summary([0, None, None]), {"provided": 3, "used": 1, "average": 0.0})
+
     def test_summary_tracks_used_values(self):
         self.assertEqual(summary([2, None, 4]), {"provided": 3, "used": 2, "average": 3.0})
 
