@@ -17,6 +17,9 @@ class StatsTests(unittest.TestCase):
     def test_summarize_count(self):
         self.assertEqual(summarize([3, 6, 9])["count"], 3)
 
+    def test_summarize_includes_zero_values(self):
+        self.assertEqual(summarize([0, 10]), {"count": 2, "average": 5.0})
+
 
 if __name__ == "__main__":
     unittest.main()
