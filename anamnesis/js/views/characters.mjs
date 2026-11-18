@@ -1,5 +1,5 @@
 import { h, field, input, textarea, select, slider, btn, badge, formData, panel, table, parseWeighted, formatWeighted, lines, fmtTime } from '../ui.mjs';
-import { workbench, saveEntity, editorHeader } from './common.mjs';
+import { workbench, saveEntity, editorHeader, researchPanel } from './common.mjs';
 import { TRAITS, VALUES } from '../core/schema.mjs';
 import { liveList } from '../core/store.mjs';
 import { decide, verifyDecision, explain, parseOptions, memoryActivation } from '../core/cognition.mjs';
@@ -10,7 +10,7 @@ export function charactersView(ctx) {
   return workbench(ctx, {
     kind: 'character', route: 'characters', title: 'Characters', sub: e => e.role || '—',
     newData: () => ({ name: 'New character' }),
-    editor: ent => h('div', {}, editorHeader(ctx, 'character', ent), characterForm(ctx, ent), memoryPanel(ctx, ent), decisionLab(ctx, ent), decisionHistory(ctx, ent)),
+    editor: ent => h('div', {}, editorHeader(ctx, 'character', ent), characterForm(ctx, ent), researchPanel(ctx, 'character', ent.id), memoryPanel(ctx, ent), decisionLab(ctx, ent), decisionHistory(ctx, ent)),
   });
 }
 

@@ -1,4 +1,5 @@
-import { h, btn, badge } from '../ui.mjs';
+import { h, btn, badge, panel } from '../ui.mjs';
+import { EVIDENCE_LABEL } from '../core/schema.mjs';
 import { liveList } from '../core/store.mjs';
 import { normalize, displayName } from '../core/schema.mjs';
 import { uid, stableStringify } from '../core/rng.mjs';
@@ -58,4 +59,14 @@ export function editorHeader(ctx, kind, ent, extra = []) {
 
 export function refOptions(state, kinds) {
   return kinds.flatMap(k => liveList(state, k).map(e => [`${k}:${e.id}`, `${k} · ${displayName(k, e)}`]));
+}
+
+/** Backlinks: research items that link to this entity, with evidence status. */
+export function researchPanel(ctx, kind, id) {
+  const ref = `${kind}:${id}`;
+  const items = liveList(ctx.state, 'inbox').filter(i => i.links.includes(ref));
+  const cls = { ESTABLISHED: 'ok', SUPPORTED: 'ok', CONTESTED: 'warn', FICTIONAL: 'fic', SIMULATION: 'sim', UNREVIEWED: 'dim' };
+  return panel(`Linked research (${items.length})`, items.length ? h('ul', { class: 'plain research-links' }, items.map(i => h('li', {},
+    h('a', { href: `#/inbox/${i.id}` }, i.title), ' ', badge(EVIDENCE_LABEL[i.evidence], cls[i.evidence]), ' ', badge(i.status, 'dim'),
+    i.claim ? h('div', { class: 'dim' }, i.claim) : null))) : h('p', { class: 'dim' }, 'No research items link here. Link them from the Research Inbox.'));
 }

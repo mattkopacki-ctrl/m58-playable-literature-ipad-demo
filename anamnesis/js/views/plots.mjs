@@ -1,5 +1,5 @@
 import { h, field, input, textarea, select, btn, formData, panel } from '../ui.mjs';
-import { workbench, saveEntity, editorHeader } from './common.mjs';
+import { workbench, saveEntity, editorHeader, researchPanel } from './common.mjs';
 import { liveList } from '../core/store.mjs';
 import { uid } from '../core/rng.mjs';
 
@@ -35,7 +35,7 @@ export function plotsView(ctx) {
         ...beatBlocks,
         h('div', { class: 'row' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save plot'),
           btn('+ Add beat', () => { const p = collect(); saveEntity(ctx, 'plot', ent, { ...p, beats: [...p.beats, { id: uid('beat'), title: `Beat ${p.beats.length + 1}`, tension: 5 }] }); })));
-      return h('div', {}, editorHeader(ctx, 'plot', ent), form, tensionStrip(ent));
+      return h('div', {}, editorHeader(ctx, 'plot', ent), form, tensionStrip(ent), researchPanel(ctx, 'plot', ent.id));
     },
   });
 }

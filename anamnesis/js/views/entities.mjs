@@ -1,5 +1,5 @@
 import { h, field, input, textarea, select, btn, badge, formData, lines, panel } from '../ui.mjs';
-import { workbench, saveEntity, editorHeader, refOptions } from './common.mjs';
+import { workbench, saveEntity, editorHeader, refOptions, researchPanel } from './common.mjs';
 import { EVIDENCE, EVIDENCE_LABEL, INBOX_STATUS, displayName } from '../core/schema.mjs';
 import { analyzeText } from '../core/analyzer.mjs';
 import { resolveRef } from '../core/store.mjs';
@@ -22,7 +22,7 @@ export function libraryView(ctx) {
           field('Form', select('form', ent.form, ['manuscript', 'reference', 'note', 'excerpt']))),
         field('Tags', input('tags', ent.tags.join(' ')), 'Space or comma separated'),
         field('Text', textarea('text', ent.text, 16, { class: 'prose' }), 'Paragraphs separated by a blank line.'),
-      ], d => ({ ...d }))),
+      ], d => ({ ...d })), researchPanel(ctx, 'library', ent.id)),
   });
 }
 
@@ -74,7 +74,7 @@ export function worldsView(ctx) {
           field('Places (one per line)', textarea('places', ent.places.join('\n'), 5)),
           field('Tags', input('tags', ent.tags.join(' '))),
         ], d => ({ ...d, rules: lines(d.rules), places: lines(d.places) })),
-        panel('Residents', residents.length ? h('ul', { class: 'plain' }, residents.map(c => h('li', {}, h('a', { href: `#/characters/${c.id}` }, c.name), ` — ${c.role}`))) : h('p', { class: 'dim' }, 'No characters placed here.')));
+        panel('Residents', residents.length ? h('ul', { class: 'plain' }, residents.map(c => h('li', {}, h('a', { href: `#/characters/${c.id}` }, c.name), ` — ${c.role}`))) : h('p', { class: 'dim' }, 'No characters placed here.')), researchPanel(ctx, 'world', ent.id));
     },
   });
 }
@@ -93,7 +93,7 @@ export function themesView(ctx) {
           field('Dramatic question', textarea('question', ent.question, 2)),
           field('Motifs', input('motifs', ent.motifs.join(' ')), 'Recurring images or objects.'),
         ], d => d),
-        panel('Carried by beats', beats.length ? h('ul', { class: 'plain' }, beats.map(([p, b]) => h('li', {}, h('a', { href: `#/plots/${p.id}` }, p.title), ` › ${b.title}`))) : h('p', { class: 'dim' }, 'Not yet carried by any beat.')));
+        panel('Carried by beats', beats.length ? h('ul', { class: 'plain' }, beats.map(([p, b]) => h('li', {}, h('a', { href: `#/plots/${p.id}` }, p.title), ` › ${b.title}`))) : h('p', { class: 'dim' }, 'Not yet carried by any beat.')), researchPanel(ctx, 'theme', ent.id));
     },
   });
 }

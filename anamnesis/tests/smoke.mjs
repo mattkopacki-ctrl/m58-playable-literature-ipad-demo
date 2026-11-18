@@ -68,6 +68,11 @@ const anl = await page.locator('main').innerText();
 check('analyzer shows metrics', /WORDS/i.test(anl) && /Flesch/i.test(anl));
 if (shots) await page.screenshot({ path: `${shots}/ipad-analyzer.png` });
 
+await page.goto(base + '#/characters/character-theo');
+check('character shows linked research backlink', (await page.locator('.research-links').innerText()).includes('Biased retellings'));
+await page.goto(base + '#/themes/theme-unreliable');
+check('theme shows linked research backlink', (await page.locator('.research-links').innerText()).includes('Established'));
+
 // Draft protection: typed text survives an unrelated re-render, then saves cleanly.
 await page.goto(base + '#/characters/character-theo');
 await page.locator('input[name="role"]').fill('Engineer with a secret');
