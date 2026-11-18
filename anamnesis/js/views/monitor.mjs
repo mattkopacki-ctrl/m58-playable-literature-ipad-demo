@@ -89,7 +89,7 @@ export function monitorView(ctx) {
         types.map(([t, n]) => h('div', { class: 'hbar-row', title: `${t}: ${n}` }, h('span', { class: 'hbar-label' }, t), h('span', { class: 'hbar-track' }, h('span', { class: 'hbar', style: { width: `${(n / max) * 100}%` } })), h('span', { class: 'hbar-n' }, String(n))))) : h('p', { class: 'dim' }, 'No events.'),
       table(['Record', 'Count'], [['Decisions recorded', s.decisions.length], ['Simulation runs', s.simruns.length], ['World events', s.worldEvents.length], ['Character actions', s.actions.length],
         ['Conversations', s.conversations.length], ['Belief updates', s.beliefUpdates.length], ['Recalls', s.recalls.length]])),
-    panel('Versions', table(['Component', 'Version'], [row('Build', 'ANAMNESIS OS Build 001'), row('Decision engine', ENGINE_VERSION), row('Export format', EXPORT_FORMAT), row('Database', 'anamnesis-os · stores "events" and "originals" · schema 2')])),
+    panel('Versions', table(['Component', 'Version'], [row('Build', 'ANAMNESIS OS Build 001'), row('Decision engine', ENGINE_VERSION), row('Experimental mechanisms', 'P1 repeatable actions · P3 experience-driven beliefs · OFF. Preview and comparisons only; never in a saved run (OD-005)'), row('Export format', EXPORT_FORMAT), row('Database', 'anamnesis-os · stores "events" and "originals" · schema 2')])),
     panel('Appearance', field('Theme', (() => { const sel = select('theme', ctx.theme.get(), ctx.theme.list); sel.addEventListener('change', () => { ctx.theme.set(sel.value); ctx.rerender(); }); return sel; })()),
       h('p', { class: 'dim' }, 'Stored in this browser only.')));
 }

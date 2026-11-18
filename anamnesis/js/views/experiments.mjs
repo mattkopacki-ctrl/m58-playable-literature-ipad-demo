@@ -2,7 +2,7 @@
 // the definition; running computes every variant in memory and records only the results.
 import { h, field, input, textarea, select, btn, badge, formData, panel, table, fmtTime } from '../ui.mjs';
 import { runExperiment, resolveBase, definitionProblems, inspectRun, scenarioChoices } from '../core/experiment.mjs';
-import { normalizeExperiment, PATCH_KINDS, VERDICTS } from '../core/experiment-schema.mjs';
+import { normalizeExperiment, PATCH_KINDS, VERDICTS, MECHANISM_LABELS } from '../core/experiment-schema.mjs';
 import { TRAITS, VALUES } from '../core/schema.mjs';
 import { clockOf } from '../core/scenario.mjs';
 import { decisionView } from './characters.mjs';
@@ -16,7 +16,15 @@ export const OLD_HOUSE_EXAMPLE = {
   kind: 'belief.set', characterId: 'oh-thomas', claim: HEAT, value: '0.2', path: 'values.safety', eventKey: '1:0', optionId: '',
   labelA: 'As written (0.85)', labelB: 'Thomas doubts it (0.2)',
 };
-const BLANK = { title: '', scenarioId: 'oldhouse', ticks: 8, seedCount: 20, researchItemId: '', hypothesis: '', prediction: '', kind: 'character.set', characterId: '', claim: '', value: '',
+// Uses a SYNTHETIC TEST FIXTURE (js/core/fixtures.mjs): trial declarations that are not approved story content.
+export const P1_FIXTURE_EXAMPLE = {
+  title: 'FIXTURE · Repeatable actions off → on', scenarioId: 'fixture:oldhouse-p1p3', ticks: 8, seedCount: 20, researchItemId: '',
+  hypothesis: 'Letting a few actions be repeated after a pause keeps characters active late in the scene without loops. (Design hypothesis about this engine, not a claim about people.)',
+  prediction: 'Acting share in minutes 5–8 rises; no use cap is exceeded; Daniel still never unlocks the door; the loop index stays at or under 10%.',
+  kind: 'mechanism.set', mechKey: 'repeatableActions', characterId: '', claim: '', value: '', path: 'values.safety', eventKey: '1:0', optionId: '',
+  labelA: 'Off (control)', labelB: 'Repeatable actions on',
+};
+const BLANK = { mechKey: 'repeatableActions', title: '', scenarioId: 'oldhouse', ticks: 8, seedCount: 20, researchItemId: '', hypothesis: '', prediction: '', kind: 'character.set', characterId: '', claim: '', value: '',
   path: 'values.safety', eventKey: '1:0', optionId: '', labelA: 'As written', labelB: 'Changed' };
 
 const pct = x => `${Math.round(x * 100)}%`;
@@ -27,6 +35,7 @@ function draftToDef(d) {
   if (d.kind === 'character.set') patch = { kind: d.kind, characterId: d.characterId, path: d.path, value: d.path === 'asleep' ? d.value === 'true' : d.path === 'place' ? d.value : Number(d.value) };
   else if (d.kind === 'belief.set') patch = { kind: d.kind, characterId: d.characterId, claim: d.claim, confidence: Number(d.value) };
   else if (d.kind === 'event.remove') { const [m, i] = String(d.eventKey).split(':').map(Number); patch = { kind: d.kind, minute: m, index: i }; }
+  else if (d.kind === 'mechanism.set') patch = { kind: d.kind, key: d.mechKey || 'repeatableActions', value: true };
   else patch = { kind: d.kind, optionId: d.optionId };
   return normalizeExperiment({ title: d.title, hypothesis: d.hypothesis, prediction: d.prediction, researchItemId: d.researchItemId, scenarioId: d.scenarioId, ticks: Number(d.ticks),
     seeds: Array.from({ length: Math.max(0, Math.min(50, Number(d.seedCount) || 0)) }, (_, i) => i),
@@ -38,6 +47,7 @@ function describePatch(p, names) {
   if (p.kind === 'character.set') return `${names[p.characterId] || p.characterId}: ${p.path.replace('.', ' → ')} set to ${p.value}`;
   if (p.kind === 'belief.set') return `${names[p.characterId] || p.characterId}: confidence in “${p.claim}” set to ${p.confidence}`;
   if (p.kind === 'event.remove') return `scripted world event ${p.index + 1} at minute ${p.minute} removed`;
+  if (p.kind === 'mechanism.set') return `experimental mechanism “${MECHANISM_LABELS[p.key] || p.key}” switched on (in memory only)`;
   return `action option “${p.optionId}” removed`;
 }
 
@@ -48,7 +58,9 @@ export function experimentsPanel(ctx) {
     h('p', { class: 'dim' }, 'Test a hypothesis fairly: run the same scenario twice with exactly one thing changed, on the same dice, and measure what differs. Everything is computed in memory. The live story, its characters and its log are never changed; only the definition and the results are saved.'),
     h('div', { class: 'row' },
       btn('+ New comparison', () => { ctx.scratch.expDraft = { ...BLANK }; ctx.go('simulator', 'exp-new'); }, 'primary'),
-      btn('Load the Old House example', () => { ctx.scratch.expDraft = { ...OLD_HOUSE_EXAMPLE }; ctx.go('simulator', 'exp-new'); })),
+      btn('Load the Old House example', () => { ctx.scratch.expDraft = { ...OLD_HOUSE_EXAMPLE }; ctx.go('simulator', 'exp-new'); }),
+      btn('Load the P1 fixture example', () => { ctx.scratch.expDraft = { ...P1_FIXTURE_EXAMPLE }; ctx.go('simulator', 'exp-new'); })),
+    h('p', { class: 'dim' }, 'Experimental mechanisms (P1 repeatable actions, P3 experience-driven beliefs) can be switched on here as the one thing that differs. They run in memory only and are never part of a saved run (owner decision OD-005).'),
     list.length ? table(['Comparison', 'Scenario', 'Runs recorded', 'Reproduced', 'Conclusion'], list.map(e => {
       const again = e.results.filter(r => r.reproduced !== null);
       return [h('a', { href: `#/simulator/exp-${e.id}` }, e.def.title), e.def.scenarioId, String(e.results.length),
@@ -96,6 +108,8 @@ export function experimentDraftView(ctx) {
       d.kind === 'belief.set' ? field('Claim', live(select('claim', who?.beliefs.some(b => b.claim === d.claim) ? d.claim : (d.claim = who?.beliefs[0]?.claim || ''), (who?.beliefs || []).map(b => [b.claim, b.claim]))), 'Beliefs this character holds at the start.') : null,
       d.kind === 'event.remove' ? field('Scripted world event to remove', select('eventKey', d.eventKey, events)) : null,
       d.kind === 'option.remove' ? field('Action option to remove', select('optionId', d.optionId, options)) : null,
+      d.kind === 'mechanism.set' ? field('Mechanism switched on in variant B', live(select('mechKey', d.mechKey || 'repeatableActions', Object.entries(MECHANISM_LABELS))), 'Experimental. Runs in memory only; variant A keeps it off. It only has an effect in a scenario that declares repeat rules or evidence.') : null,
+      String(d.scenarioId).startsWith('fixture:') ? h('p', { class: 'warn', id: 'fixture-note' }, badge('SYNTHETIC TEST FIXTURE', 'warn'), ' This scenario is the Old House plus trial repeat rules and evidence values that are not approved story content. Results describe the mechanism, not the story.') : null,
       d.kind === 'character.set' || d.kind === 'belief.set' ? field('Value in variant B', valueControl, current()) : null,
       h('div', { class: 'grid2' }, field('Variant A (control) label', input('labelA', d.labelA), 'A is always the scenario as written.'), field('Variant B label', input('labelB', d.labelB)))),
     h('div', { class: 'grid2' }, field('Minutes to run', input('ticks', String(d.ticks), { type: 'number', min: 1, max: base?.scenario.maxTicks || 240, inputmode: 'numeric' })),
@@ -134,6 +148,33 @@ function shareTable(res, a, b) {
         h('span', { class: r.y - r.x >= 0 ? 'pos' : 'neg' }, `${r.y - r.x >= 0 ? '+' : '−'}${Math.abs(Math.round((r.y - r.x) * 100))} pts`)]));
   }
   return rows.length ? table(['Character', 'Action', a.label, b.label, 'Change'], rows) : h('p', { class: 'dim' }, 'No action was chosen at a different rate.');
+}
+
+// Measures added for the experimental mechanisms (Drive doc 13 §2). Present on results recorded from this build on.
+function mechanismMeasures(res, A, B, names) {
+  const m = res.measures, a = m.variants[A.id], b = m.variants[B.id];
+  const p1 = x => `${Math.round(x * 1000) / 10}%`;
+  const over = (v, lim) => h('span', { class: v > lim ? 'neg' : '' }, p1(v));
+  const moved = [];
+  for (const id of res.cast) for (const claim of Object.keys(b.beliefByMinute[id] || {})) {
+    const x = a.beliefByMinute[id]?.[claim] || [], y = b.beliefByMinute[id][claim];
+    if (y.some((v, i) => v !== x[i])) moved.push([short(names[id]), claim, String(x.at(-1)), String(y.at(-1)), y.join(' · ')]);
+  }
+  const uses = Object.entries(b.maxUses).filter(([, u]) => u.uses > 1);
+  return h('div', { id: 'mech-measures' },
+    h('h3', {}, 'Experimental-mechanism measures'),
+    m.fixture ? h('p', { class: 'warn' }, badge('SYNTHETIC TEST FIXTURE', 'warn'), ' Trial declarations, not approved story content.') : null,
+    table(['Measure', A.label, B.label], [
+      ['Loop index, all characters', over(a.loopIndex.overall.index, m.limits.overall), over(b.loopIndex.overall.index, m.limits.overall)],
+      ...res.cast.map(id => [`Loop index, ${short(names[id])}`, over(a.loopIndex.byCharacter[id].index, m.limits.character), over(b.loopIndex.byCharacter[id].index, m.limits.character)]),
+      ['Beliefs changed by experience (all runs)', String(a.beliefUpdates.total), String(b.beliefUpdates.total)],
+      ...b.outOfCharacter.map((r, i) => [`Must not happen: ${r.label}`, `${a.outOfCharacter[i]?.runs ?? '—'} of ${r.of} runs`, `${r.runs} of ${r.of} runs`]),
+    ]),
+    h('p', { class: 'dim' }, `Loop index = share of awake character-minutes that go back and forth (A-B-A) or repeat the same action twice running. Guide: at most ${p1(m.limits.overall)} overall and ${p1(m.limits.character)} for one character.`),
+    uses.length ? h('div', {}, h('h4', {}, `Most times one character took the same action in a run (${B.label})`),
+      table(['Action', 'Most times', 'Who', 'Dice set'], uses.map(([opt, u]) => [B.aggregate.labels[opt] || opt, String(u.uses), short(names[u.characterId]), String(u.seedOffset)]))) : null,
+    moved.length ? h('div', {}, h('h4', {}, 'Beliefs that moved (mean confidence across dice sets)'),
+      table(['Who', 'Belief', `End, ${A.label}`, `End, ${B.label}`, `${B.label}, minute by minute`], moved)) : h('p', { class: 'dim' }, 'No belief ended at a different confidence.'));
 }
 
 export function experimentView(ctx, exp) {
@@ -190,6 +231,7 @@ export function experimentView(ctx, exp) {
       return [m.minute, pct(m.activeShare), pct(m.passiveShare), pct(n.activeShare), pct(n.passiveShare), `${m.meanActiveOptions} / ${n.meanActiveOptions}`];
     })),
     h('p', { class: 'dim' }, '“Acting” = chose an option that does something (move, tell, test, wake…). “Waiting” = chose an option with no effect. Sleeping characters are counted separately.'),
+    res.measures ? mechanismMeasures(res, A, B, names) : null,
     h('h3', {}, 'Inspect one run'),
     h('div', { class: 'row' },
       field('Variant', select('iv', insp?.variant || 'B', res.variants.map(v => [v.id, `${v.id} · ${v.label}`]))), field('Dice set', select('is', String(insp?.seed ?? fd?.seedOffset ?? res.seeds[0]), res.seeds.map(s => [String(s), String(s)]))),

@@ -6,6 +6,7 @@ import { liveList } from '../core/store.mjs';
 import { compileScenario } from '../core/studio.mjs';
 import { stepScenario, scenarioStatus, previewScenario, knowledgeMatrix, clockOf } from '../core/scenario.mjs';
 import { uid } from '../core/rng.mjs';
+import { previewLoopIndex, LOOP_LIMITS } from '../core/experiment.mjs';
 
 const words = v => String(v || '').split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
 const kvText = list => list.map(f => `${f.key} = ${f.value}`).join('\n');
@@ -13,6 +14,11 @@ const parseKv = text => String(text || '').split(/[\n,;]+/).map(l => l.split('='
 const beliefsText = list => list.map(b => `${b.sign < 0 ? '-' : '+'}${b.claim}`).join('; ');
 const parseBeliefs = text => String(text || '').split(';').map(s => s.trim()).filter(Boolean).map(s => ({ sign: s.startsWith('-') ? -1 : 1, claim: s.replace(/^[+-]\s*/, '') })).filter(b => b.claim);
 const optNum = v => (String(v ?? '').trim() === '' ? null : Number(v));
+// Evidence (experimental, P3) is typed as "+0.6 claim; -0.4 other claim".
+const evidenceText = list => (list || []).map(e => `${e.direction < 0 ? '-' : '+'}${e.strength} ${e.claim}`).join('; ');
+const parseEvidence = text => String(text || '').split(';').map(s => s.trim().match(/^([+\-−])\s*([0-9.]+)\s+(.+)$/)).filter(Boolean).map(m => ({ direction: m[1] === '+' ? 1 : -1, strength: Number(m[2]), claim: m[3].trim() }));
+const EV_HELP = 'Experimental (P3), Preview and comparisons only. Format: +0.6 claim; -0.4 other claim. It only moves a belief the character already holds.';
+const pct = x => `${Math.round(x * 1000) / 10}%`;
 
 function placeSelect(name, value, places, emptyLabel) {
   return select(name, value || '', [...(emptyLabel ? [['', emptyLabel]] : []), ...places.map(p => [p, p])]);
@@ -31,10 +37,11 @@ function channelFields(px, c, places, onRemove) {
     h('div', { class: 'row' }, flag(`${px}wakes`, c.wakes, 'Wakes sleepers there'),
       field('Valence (blank = event’s)', input(`${px}valence`, c.valence ?? '', { inputmode: 'decimal' })),
       field('Arousal (blank = event’s)', input(`${px}arousal`, c.arousal ?? '', { inputmode: 'decimal' })),
-      btn('Remove channel', onRemove, 'small danger')));
+      btn('Remove channel', onRemove, 'small danger')),
+    field('Evidence this perception gives', input(`${px}evidence`, evidenceText(c.evidence)), EV_HELP));
 }
 const readChannel = (d, px) => ({ name: d[`${px}name`], places: d[`${px}places`] || [], wakes: (d[`${px}wakes`] || []).length > 0, text: d[`${px}text`],
-  tags: words(d[`${px}tags`]), valence: optNum(d[`${px}valence`]), arousal: optNum(d[`${px}arousal`]) });
+  tags: words(d[`${px}tags`]), valence: optNum(d[`${px}valence`]), arousal: optNum(d[`${px}arousal`]), evidence: parseEvidence(d[`${px}evidence`]) });
 
 function eventFields(px, e, places, ops, extra = []) {
   return [
@@ -55,15 +62,17 @@ function collect(form, ent) {
   const cast = (d.cast || []).map(id => ({ characterId: id, place: d[`place-${id}`] || '', asleep: on(`asleep-${id}`) }));
   return {
     name: d.name, worldId: d.worldId, prompt: d.prompt, tags: words(d.tags), start: d.start, ticks: Number(d.ticks), facts: parseKv(d.facts), cast, seedOffset: Number(d.seedOffset) || 0,
+    mechanisms: { repeatableActions: on('mechP1'), experienceBeliefs: on('mechP3') },
     events: ent.events.map((e, i) => ({ id: e.id, minute: Number(d[`e-${i}-minute`]), ...readEvent(d, `e-${i}-`, e.channels.length) })),
     options: ent.options.map((o, k) => {
       const px = `o-${k}-`;
       return { id: o.id, label: d[`${px}label`], tags: words(d[`${px}tags`]), beliefs: parseBeliefs(d[`${px}beliefs`]),
+        repeat: String(d[`${px}repeatTag`] || '').trim() ? { tag: d[`${px}repeatTag`], cooldown: Number(d[`${px}repeatCooldown`]), maxUses: Number(d[`${px}repeatMax`]), reopenOn: words(d[`${px}repeatReopen`]) } : null,
         requires: { awake: d[`${px}awake`], places: d[`${px}places`] || [], notPlaces: d[`${px}notPlaces`] || [], knows: words(d[`${px}knows`]), lacks: words(d[`${px}lacks`]),
           company: on(`${px}company`), world: words(d[`${px}world`]) },
-        effects: { moveTo: d[`${px}moveTo`], remember: { text: d[`${px}remember`], tags: words(d[`${px}rememberTags`]), valence: Number(d[`${px}rememberValence`]), arousal: Number(d[`${px}rememberArousal`]) },
+        effects: { moveTo: d[`${px}moveTo`], remember: { text: d[`${px}remember`], tags: words(d[`${px}rememberTags`]), valence: Number(d[`${px}rememberValence`]), arousal: Number(d[`${px}rememberArousal`]), evidence: parseEvidence(d[`${px}rememberEvidence`]) },
           wakeWith: d[`${px}wakeWith`], tellHere: d[`${px}tellHere`], setFacts: parseKv(d[`${px}setFacts`]),
-          emits: on(`${px}emits`) ? { ...readEvent(d, `${px}x-`, o.effects.emits?.channels.length || 0), actorText: d[`${px}x-actorText`] || '', actorTags: words(d[`${px}x-actorTags`]) } : null } };
+          emits: on(`${px}emits`) ? { ...readEvent(d, `${px}x-`, o.effects.emits?.channels.length || 0), actorText: d[`${px}x-actorText`] || '', actorTags: words(d[`${px}x-actorTags`]), actorEvidence: parseEvidence(d[`${px}x-actorEvidence`]) } : null } };
     }),
   };
 }
@@ -105,6 +114,10 @@ export function studioView(ctx, ent) {
   const clean = () => { form.dataset.dirty = '0'; form.querySelector('.draft-bar')?.remove(); };
   const mutate = fn => { const data = collect(form, ent); fn(data); clean(); return save(data); };
   const pv = ctx.scratch.preview?.[ent.id];
+  const mech = ent.mechanisms || {};
+  const mechOn = [mech.repeatableActions ? 'P1 repeatable actions' : '', mech.experienceBeliefs ? 'P3 experience-driven beliefs' : ''].filter(Boolean);
+  const pvLoop = pv?.ticks.length ? previewLoopIndex(pv.ticks, castIds) : null;
+  const pvUpdates = pv ? pv.ticks.flatMap(t => (t.beliefUpdates || []).map(u => ({ clock: t.clock, ...u }))) : [];
 
   // run panel
   const remaining = sc ? sc.maxTicks - st.tick : 0;
@@ -134,11 +147,18 @@ export function studioView(ctx, ent) {
       btn('Run one minute', () => run(1), '', { disabled: !sc || st.done ? 'disabled' : null }),
       btn('Run to end', () => run(remaining), '', { disabled: !sc || st.done ? 'disabled' : null }),
       st.done ? badge('FINISHED', 'dim') : null),
+    mechOn.length ? h('p', { class: 'warn', id: 'mech-note' }, badge('EXPERIMENTAL', 'warn'), ` ${mechOn.join(' and ')} switched on for Preview only. Run always ignores experimental mechanisms; a run written to the log is never made under them (owner decision OD-005).`) : null,
     h('p', { class: 'dim' }, 'Preview runs in memory from the current project state and writes nothing. Run writes to the log: the cast’s memories, places and beliefs change for good, and a run cannot be rewound (branching is blocked). Use Preview to experiment.'),
     pv ? h('div', { class: 'preview' },
       h('h3', {}, `Preview · ${pv.ticks.length} minute(s) · not saved`),
       pv.seq !== ctx.state.seq ? h('p', { class: 'warn' }, 'The project has changed since this preview. Preview again to refresh it.') : null,
+      pv.ticks[0]?.mechanisms && (pv.ticks[0].mechanisms.repeatableActions || pv.ticks[0].mechanisms.experienceBeliefs)
+        ? h('p', { id: 'pv-mech' }, badge('EXPERIMENTAL MECHANISMS ON IN THIS PREVIEW', 'warn'), ` ${[pv.ticks[0].mechanisms.repeatableActions ? 'P1 repeatable actions' : '', pv.ticks[0].mechanisms.experienceBeliefs ? 'P3 experience-driven beliefs' : ''].filter(Boolean).join(' · ')}`) : null,
       timeline(castIds, pv.ticks, nameOf),
+      pvLoop ? h('p', { id: 'pv-loop', class: pvLoop.over ? 'warn' : 'dim' }, `Loop index ${pct(pvLoop.overall)} of awake character-minutes (back-and-forth or the same action twice running). Guide: at most ${pct(LOOP_LIMITS.overall)} overall, ${pct(LOOP_LIMITS.character)} for one character.${pvLoop.over ? ' This preview is above the guide: someone is going round in circles.' : ''}`) : null,
+      pvUpdates.length ? h('div', { id: 'pv-beliefs' }, h('h3', {}, `Beliefs changed by experience (${pvUpdates.length})`),
+        table(['Time', 'Who', 'Belief', 'Confidence', 'From what they experienced'], pvUpdates.map(u => [u.clock, nameOf(u.characterId).split(' ')[0], u.claim, `${u.before} → ${u.after}`,
+          pv.state.entities.character[u.characterId]?.memories.find(m => m.id === u.source?.ref)?.text || u.source?.ref || '']))) : null,
       h('h3', {}, 'Who would know what'), matrixTable(pv.state, castIds, nameOf, { id: ent.id, cast: castIds }),
       btn('Clear preview', () => { delete ctx.scratch.preview[ent.id]; ctx.rerender(); }, 'small')) : null,
     started ? h('div', {}, h('h3', {}, 'Recorded run'), timeline(castIds, ticksFromLog(state, ent.id), nameOf),
@@ -160,7 +180,11 @@ export function studioView(ctx, ent) {
         h('div', { class: 'grid2' }, field('Starts at', input('start', ent.start, { type: 'time' })), field('Minutes', input('ticks', String(ent.ticks), { type: 'number', min: 1, max: 240, inputmode: 'numeric' })))),
       field('Facts (one per line: key = value)', textarea('facts', kvText(ent.facts), 2), 'Options can require a fact (kettle=COLD) and change it.'),
       field('Dice set (0–9999)', input('seedOffset', String(ent.seedOffset || 0), { type: 'number', min: 0, max: 9999, inputmode: 'numeric' }),
-        started ? `This run is fixed on dice set ${st.seedOffset}. A different number only applies to a run that has not started.` : 'Same number, same story. A different number rerolls the small random nudges in every decision. 0 is the standard set.')),
+        started ? `This run is fixed on dice set ${st.seedOffset}. A different number only applies to a run that has not started.` : 'Same number, same story. A different number rerolls the small random nudges in every decision. 0 is the standard set.'),
+      h('fieldset', { id: 'mechanisms' }, h('legend', {}, 'Experimental mechanisms · off by default · Preview only'),
+        flag('mechP1', !!mech.repeatableActions, 'P1 · Repeatable actions (options with a repeat rule can be taken again after a pause)'),
+        flag('mechP3', !!mech.experienceBeliefs, 'P3 · Experience-driven beliefs (evidence on what a character perceives moves beliefs they already hold)'),
+        h('p', { class: 'dim' }, 'These affect Preview and controlled comparisons only. Run ignores them, and the log refuses any run made under them (OD-005). With both off, repeat rules and evidence below do nothing.'))),
     h('fieldset', {}, h('legend', {}, `Cast (${ent.cast.length})`),
       places.length ? null : h('p', { class: 'warn' }, 'Choose a world with places to set starting positions.'),
       castable.length ? table(['In cast', 'Starts at', 'Asleep'], castable.map(c => {
@@ -192,11 +216,17 @@ export function studioView(ctx, ent) {
             field('Only at', placeChecks(`${px}places`, o.requires.places, places)),
             field('Not at', placeChecks(`${px}notPlaces`, o.requires.notPlaces, places)),
             h('div', { class: 'grid2' }, field('Knows (memory tags they must hold)', input(`${px}knows`, o.requires.knows.join(' '))), field('Not yet done (memory tags they must lack)', input(`${px}lacks`, o.requires.lacks.join(' ')))),
-            flag(`${px}company`, o.requires.company, 'Needs someone else present')),
+            flag(`${px}company`, o.requires.company, 'Needs someone else present'),
+            h('fieldset', {}, h('legend', {}, 'Repeat rule (experimental · P1)'),
+              h('div', { class: 'grid2' }, field('Repeat tag', input(`${px}repeatTag`, o.repeat?.tag || ''), 'Blank = once only. Must be a memory tag this option writes and also be listed under “Not yet done”.'),
+                field('Can repeat only after something new tagged', input(`${px}repeatReopen`, (o.repeat?.reopenOn || []).join(' ')), 'Optional.')),
+              h('div', { class: 'grid2' }, field('Pause before repeating (minutes, 2–240)', input(`${px}repeatCooldown`, o.repeat ? String(o.repeat.cooldown) : '', { inputmode: 'numeric' })),
+                field('Most times in one run (1–20)', input(`${px}repeatMax`, o.repeat ? String(o.repeat.maxUses) : '', { inputmode: 'numeric' }))))),
           h('fieldset', {}, h('legend', {}, 'What it does'),
             h('div', { class: 'grid2' }, field('Move to', placeSelect(`${px}moveTo`, o.effects.moveTo, places, '— stay —')), field('Set facts (key = value)', input(`${px}setFacts`, kvText(o.effects.setFacts).replace(/\n/g, ', ')))),
             h('div', { class: 'grid2' }, field('They remember', input(`${px}remember`, o.effects.remember.text)), field('Memory tags', input(`${px}rememberTags`, o.effects.remember.tags.join(' ')))),
             h('div', { class: 'grid2' }, field('Memory valence', input(`${px}rememberValence`, String(o.effects.remember.valence), { inputmode: 'decimal' })), field('Memory arousal', input(`${px}rememberArousal`, String(o.effects.remember.arousal), { inputmode: 'decimal' }))),
+            field('Evidence the actor takes from doing it', input(`${px}rememberEvidence`, evidenceText(o.effects.remember.evidence)), EV_HELP),
             h('div', { class: 'grid2' }, field('Wake sleepers, telling them memory tagged', input(`${px}wakeWith`, o.effects.wakeWith)), field('Tell people here memory tagged', input(`${px}tellHere`, o.effects.tellHere))),
             flag(`${px}emits`, !!x, 'Causes a world event others can perceive'),
             x ? h('fieldset', {}, h('legend', {}, 'World event caused by this action'),
@@ -204,7 +234,8 @@ export function studioView(ctx, ent) {
                 addChannel: () => { ctx.scratch.openOption = o.id; mutate(d => d.options[k].effects.emits.channels.push({ name: 'perceived', places: [], text: '', tags: [] })); },
                 removeChannel: j => { ctx.scratch.openOption = o.id; mutate(d => d.options[k].effects.emits.channels.splice(j, 1)); },
               }),
-              h('div', { class: 'grid2' }, field('What the actor remembers doing', input(`${px}x-actorText`, x.actorText)), field('Actor memory tags', input(`${px}x-actorTags`, x.actorTags.join(' '))))) : null),
+              h('div', { class: 'grid2' }, field('What the actor remembers doing', input(`${px}x-actorText`, x.actorText)), field('Actor memory tags', input(`${px}x-actorTags`, x.actorTags.join(' ')))),
+              field('Evidence the actor takes from the outcome', input(`${px}x-actorEvidence`, evidenceText(x.actorEvidence)), EV_HELP)) : null),
           h('div', { class: 'row' }, btn('Remove option', () => mutate(d => d.options.splice(k, 1)), 'small danger')));
       }),
       h('div', { class: 'row' }, btn('+ Action option', () => { const id = uid('opt'); ctx.scratch.openOption = id; mutate(d => d.options.push({ id, label: 'New action', tags: [], requires: { awake: 'awake' }, effects: {} })); }, 'small'))),

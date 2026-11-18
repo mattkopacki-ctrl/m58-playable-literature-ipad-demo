@@ -250,6 +250,75 @@ check('T-027: live characters, scenarios and story records are unchanged by the 
 const expTypes = await page.evaluate(n => [...new Set(window.__anamnesis.events.slice(n).map(e => e.type))].sort().join(','), evDraft);
 check('T-027: only experiment events were written', expTypes === 'experiment.conclude,experiment.register,experiment.result', expTypes);
 
+// Experimental mechanisms P1/P3 (OD-005): off by default, comparisons and Preview only, never in a saved run.
+await page.goto(base + '#/simulator');
+const mechLive = () => page.evaluate(() => { const s = window.__anamnesis.state; return JSON.stringify([s.entities.character, s.scenarios, s.worldEvents.length, s.actions.length, s.simruns.length, s.beliefUpdates.length, s.rejected.length]); });
+const mechBefore = await mechLive();
+const evMech = await page.evaluate(() => window.__anamnesis.events.length);
+await page.getByRole('button', { name: 'Load the P1 fixture example' }).click();
+await page.waitForSelector('#fixture-note');
+const draftTxt = await page.locator('main').innerText();
+check('P1/P3: the fixture comparison is labelled as a synthetic test fixture and passes its checks', /SYNTHETIC TEST FIXTURE/.test(draftTxt) && /not approved story content/.test(draftTxt) && draftTxt.includes('READY TO REGISTER'));
+await page.getByRole('button', { name: 'Register (locks the definition) ▸' }).click();
+await page.waitForFunction(() => /#\/simulator\/exp-[0-9a-f]+/.test(location.hash));
+const mechId = await page.evaluate(() => location.hash.split('exp-')[1]);
+await page.getByRole('button', { name: 'Run in memory ▸' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.experiments[id].results.length === 1, mechId, { timeout: 60000 });
+const mr = await page.evaluate(id => { const r = window.__anamnesis.state.experiments[id].results[0].results; const late = v => v.aggregate.byMinute.slice(4).reduce((x, m) => x + m.activeShare, 0) / 4;
+  return { a: late(r.variants[0]), b: late(r.variants[1]), ma: r.measures.variants.A.mechanisms, mb: r.measures.variants.B.mechanisms, loop: r.measures.variants.B.loopIndex.overall.index, ooc: r.measures.variants.B.outOfCharacter.map(x => x.runs), fixture: r.measures.fixture, digest: r.resultDigest }; }, mechId);
+check('P1: in the browser, repeatable actions raise late activity (same numbers as the acceptance run)', Math.abs(mr.a - 0.225) < 1e-9 && Math.abs(mr.b - 0.435) < 1e-9, JSON.stringify(mr));
+check('P1: control ran with the switch off, variant B with only P1 on; no must-not-happen action; loop index within the guide', !mr.ma.repeatableActions && !mr.ma.experienceBeliefs && mr.mb.repeatableActions && !mr.mb.experienceBeliefs && mr.ooc.every(n => n === 0) && mr.loop <= 0.10);
+const measTxt = await page.locator('#mech-measures').innerText();
+check('P1: the results screen shows the loop index, use counts and the fixture warning', /Loop index, all characters/.test(measTxt) && /SYNTHETIC TEST FIXTURE/.test(measTxt) && /Most times one character took the same action/.test(measTxt));
+if (shots) { await page.locator('#mech-measures').scrollIntoViewIfNeeded(); await page.screenshot({ path: `${shots}/ipad-mechanism-measures.png` }); }
+await page.getByRole('button', { name: 'Run again (checks it reproduces) ▸' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.experiments[id].results.length === 2, mechId, { timeout: 60000 });
+check('P1: the fixture comparison reproduces exactly on re-run', await page.evaluate(id => window.__anamnesis.state.experiments[id].results[1].reproduced === true, mechId));
+const mechTypes = await page.evaluate(n => [...new Set(window.__anamnesis.events.slice(n).map(e => e.type))].sort().join(','), evMech);
+check('P1/P3: the comparison wrote only its definition and results; the live project is unchanged', mechTypes === 'experiment.register,experiment.result' && mechBefore === await mechLive(), mechTypes);
+
+// Studio: declare a repeat rule and evidence on the editable Old House copy, switch both on for Preview, then prove a real Run ignores them.
+const copyId = await page.evaluate(() => Object.values(window.__anamnesis.state.entities.scenario).find(e => /editable copy/i.test(e.name)).id);
+await page.goto(base + '#/simulator/' + copyId);
+await page.waitForSelector('#mechanisms');
+check('Studio: both experimental switches exist and are off by default', await page.evaluate(() => !document.querySelector('[name=mechP1]').checked && !document.querySelector('[name=mechP3]').checked) && !(await page.locator('#mech-note').count()));
+await page.evaluate(() => document.querySelectorAll('details.option').forEach(d => { d.open = true; }));
+const listenK = await page.evaluate(id => window.__anamnesis.state.entities.scenario[id].options.findIndex(o => o.label === 'Listen at the basement door'), copyId);
+await page.locator(`input[name="o-${listenK}-repeatTag"]`).fill('listened');
+await page.locator(`input[name="o-${listenK}-repeatCooldown"]`).fill('1');
+await page.locator(`input[name="o-${listenK}-repeatMax"]`).fill('3');
+await page.locator(`input[name="o-${listenK}-repeatReopen"]`).fill('knock');
+await page.locator('input[name="e-1-c-0-evidence"]').fill('-0.7 The noises are just the heating; +0.6 Something is in the basement');
+await page.locator('input[name="e-1-c-1-evidence"]').fill('-0.4 The noises are just the heating');
+await page.locator('[name=mechP1]').check();
+await page.locator('[name=mechP3]').check();
+await page.getByRole('button', { name: 'Save scenario' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.entities.scenario[id].mechanisms?.experienceBeliefs === true, copyId);
+check('Studio: a repeat pause shorter than 2 minutes is refused in plain words', /repeat cooldown must be 2 to 240 minutes \(it is 1\)/.test(await page.locator('main').innerText()));
+await page.evaluate(() => document.querySelectorAll('details.option').forEach(d => { d.open = true; }));
+await page.locator(`input[name="o-${listenK}-repeatCooldown"]`).fill('2');
+await page.getByRole('button', { name: 'Save scenario' }).click();
+await page.waitForFunction(([id, k]) => window.__anamnesis.state.entities.scenario[id].options[k].repeat?.cooldown === 2, [copyId, listenK]);
+const saved = await page.evaluate(([id, k]) => { const e = window.__anamnesis.state.entities.scenario[id]; return { repeat: e.options[k].repeat, ev: e.events[1].channels[0].evidence, mech: e.mechanisms }; }, [copyId, listenK]);
+check('Studio: repeat rule, evidence and switches are saved as typed', JSON.stringify(saved.repeat) === JSON.stringify({ tag: 'listened', cooldown: 2, maxUses: 3, reopenOn: ['knock'] }) && saved.ev.length === 2 && saved.ev[0].direction === -1 && saved.ev[0].strength === 0.7 && saved.mech.repeatableActions && saved.mech.experienceBeliefs, JSON.stringify(saved));
+const noteTxt = await page.locator('#mech-note').innerText();
+check('Studio: says the switches are for Preview only and Run ignores them', /Preview only/.test(noteTxt) && /Run always ignores/.test(noteTxt) && (await page.locator('main').innerText()).includes('READY TO RUN'));
+const evPv = await page.evaluate(() => window.__anamnesis.events.length);
+await page.getByRole('button', { name: 'Preview (not saved) ▸' }).click();
+await page.waitForSelector('#pv-mech');
+const pvTxt = await page.locator('.preview').innerText();
+check('Studio: Preview runs with the mechanisms on, shows the loop index, and writes nothing', /EXPERIMENTAL MECHANISMS ON IN THIS PREVIEW/.test(pvTxt) && /Loop index/.test(pvTxt) && evPv === await page.evaluate(() => window.__anamnesis.events.length));
+check('Studio: Preview lists beliefs changed by experience with the memory that caused each', (await page.locator('#pv-beliefs').count()) === 1 && /→/.test(await page.locator('#pv-beliefs').innerText()), (await page.locator('#pv-beliefs').count()) ? (await page.locator('#pv-beliefs').innerText()).slice(0, 200) : 'no belief table');
+if (shots) { await page.locator('#pv-mech').scrollIntoViewIfNeeded(); await page.screenshot({ path: `${shots}/ipad-studio-mechanism-preview.png` }); }
+await page.getByRole('button', { name: 'Run to end' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.scenarios[id]?.tick === 8, copyId, { timeout: 60000 });
+const liveRun = await page.evaluate(([id, n]) => { const a = window.__anamnesis; const evs = a.events.slice(n);
+  return { mech: evs.some(e => e.payload.mechanisms || e.payload.situation?.mechanisms), exp: evs.some(e => e.type === 'belief.update'), engines: [...new Set(evs.filter(e => e.type === 'sim.run').flatMap(e => e.payload.decisions.map(d => d.engine)))],
+    repeatSeen: JSON.stringify(evs).includes('"repeat"'), pinned: a.state.scenarios[id].mechanisms || null, rejected: a.state.rejected.length,
+    listens: Object.values(evs.filter(e => e.type === 'world.act' && e.payload.optionId && e.payload.label === 'Listen at the basement door').reduce((m, e) => { m[e.payload.characterId] = (m[e.payload.characterId] || 0) + 1; return m; }, {})) }; }, [copyId, evPv]);
+check('OD-005: a real Run with both switches ticked is made without them (no mechanism on the run, no experience updates, plain engine id, nobody repeats)',
+  !liveRun.mech && !liveRun.exp && !liveRun.repeatSeen && liveRun.pinned === null && liveRun.engines.join() === 'anamnesis-decide-3' && liveRun.listens.every(n => n === 1) && liveRun.rejected === 0, JSON.stringify(liveRun));
+
 // System Monitor: integrity checks read-only and pass.
 await page.goto(base + '#/monitor');
 const evBefore = await page.evaluate(() => window.__anamnesis.events.length);

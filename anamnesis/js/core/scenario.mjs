@@ -2,7 +2,7 @@
 // tick. Truth lives in world events; characters only ever receive their own perception.
 // Status: SIMULATION TECHNIQUE.
 import { apply, makeEvent } from './store.mjs';
-import { decide, buildConversation } from './cognition.mjs';
+import { decide, buildConversation, experienceUpdates, cleanMechanisms, anyMechanism } from './cognition.mjs';
 
 export function clockOf(hours) {
   const m = Math.round(hours * 60);
@@ -36,10 +36,41 @@ export function buildWorldEvent(template, { id, storyTime, characters, provenanc
     causedBy: actor?.id || '', perceptions, notPerceivedBy: characters.filter(c => !perceptions.some(p => p.characterId === c.id)).map(c => c.id) };
 }
 
+/**
+ * P3: which perceptions of a built world event carry authored evidence. Reads only the channel a
+ * character perceived through (or the actor's own outcome) and never the event's truth.
+ */
+export function perceptionEvidence(template, worldEvent) {
+  const out = [];
+  for (const p of worldEvent.perceptions || []) {
+    const evidence = p.characterId === worldEvent.causedBy && p.channel === 'did it' ? template.actorEvidence
+      : (template.channels || []).find(c => c.name === p.channel && c.text === p.text)?.evidence;
+    if (evidence?.length) out.push({ characterId: p.characterId, memoryId: p.memory.id, evidence });
+  }
+  return out;
+}
+
+// Authoring fields the engine must not see unless their switch is on. Stripping them keeps a run
+// with both switches off byte-identical to builds that had no such fields.
+function runtimeOptions(options, mech) {
+  return options.map(o => {
+    const { repeat, ...opt } = o;
+    if (mech.repeatableActions && repeat) opt.repeat = repeat;
+    if (!o.effects) return opt;
+    const fx = { ...o.effects };
+    if (fx.remember?.evidence) { const { evidence, ...rest } = fx.remember; fx.remember = rest; }
+    if (fx.emits && (fx.emits.actorEvidence || fx.emits.channels?.some(c => c.evidence))) {
+      const { actorEvidence, ...e } = fx.emits;
+      fx.emits = { ...e, channels: (e.channels || []).map(({ evidence, ...c }) => c) };
+    }
+    return { ...opt, effects: fx };
+  });
+}
+
 export function scenarioStatus(state, scenario) {
   const sc = state.scenarios?.[scenario.id] || null;
   return { installed: scenario.cast.every(id => state.entities.character[id]), tick: sc?.tick || 0, done: (sc?.tick || 0) >= scenario.maxTicks, seedOffset: sc?.seedOffset || 0,
-    clock: sc ? sc.clock : clockOf(scenario.t0), facts: sc?.facts || scenario.facts };
+    mechanisms: cleanMechanisms(sc?.mechanisms), clock: sc ? sc.clock : clockOf(scenario.t0), facts: sc?.facts || scenario.facts };
 }
 
 export const SEED_STRIDE = 100000; // larger than any tick count, so (offset, tick) pairs never collide
@@ -52,6 +83,10 @@ const cleanOffset = v => { const n = Math.round(Number(v)); return Number.isFini
  * One tick. Returns { events: [[type, payload]...], state } without touching storage.
  * opts.seedOffset picks an independent set of dice for the whole run. It is fixed at tick 1
  * and read back from the run's own state afterwards, so it cannot change mid-run.
+ *
+ * Experimental mechanisms (OD-005) follow the same pinning, with one more rule: they are honoured
+ * only when opts.sandbox is true, which only previewScenario sets. A live run never has them,
+ * whatever the scenario says, and the store rejects such a run if one is ever offered to the log.
  */
 export function stepScenario(state, scenario, opts = {}) {
   const st = scenarioStatus(state, scenario);
@@ -60,13 +95,29 @@ export function stepScenario(state, scenario, opts = {}) {
   const tick = st.tick + 1;
   const seedOffset = tick === 1 ? cleanOffset(opts.seedOffset ?? scenario.seedOffset) : cleanOffset(state.scenarios?.[scenario.id]?.seedOffset);
   const seed = seedFor(tick, seedOffset);
+  const sandbox = opts.sandbox === true;
+  const mech = !sandbox ? cleanMechanisms(null) : tick === 1 ? cleanMechanisms(opts.mechanisms ?? scenario.mechanisms) : cleanMechanisms(state.scenarios?.[scenario.id]?.mechanisms);
+  const on = anyMechanism(mech);
   const now = Math.round((scenario.t0 + (tick - 1) / 60) * 10000) / 10000;
   const events = [];
   let w = state;
-  const push = (type, payload) => { events.push([type, payload]); w = apply(w, makeEvent(w.seq + 1, type, payload, '1970-01-01T00:00:00.000Z')); };
+  const push = (type, payload) => { events.push([type, payload]); w = apply(w, makeEvent(w.seq + 1, type, payload, '1970-01-01T00:00:00.000Z'), { sandbox }); };
+  // P3 bookkeeping: claims already updated this minute per character, and evidence that changed nothing.
+  const takenClaims = {}, evidenceSkipped = [];
+  const applyEvidence = items => {
+    if (!mech.experienceBeliefs || !items.length) return;
+    for (const id of scenario.cast) {
+      const mine = items.filter(it => it.characterId === id);
+      const ch = w.entities.character[id];
+      if (!mine.length || !ch) continue;
+      const { updates, skipped } = experienceUpdates(ch, mine, takenClaims[id] || []);
+      evidenceSkipped.push(...skipped);
+      for (const u of updates) { (takenClaims[id] ||= []).push(u.claim); push('belief.update', { ...u, storyTime: now, scenarioId: scenario.id, tick }); }
+    }
+  };
 
   // seedOffset is written only when non-zero, so runs with the default dice produce byte-identical logs to earlier builds.
-  push('scenario.advance', { scenarioId: scenario.id, tick, storyTime: now, clock: clockOf(now), status: 'PAUSED', facts: scenario.facts, ...(seedOffset ? { seedOffset } : {}) });
+  push('scenario.advance', { scenarioId: scenario.id, tick, storyTime: now, clock: clockOf(now), status: 'PAUSED', facts: scenario.facts, ...(seedOffset ? { seedOffset } : {}), ...(on ? { mechanisms: mech } : {}) });
 
   // 0. Starting positions (authored scenarios), written as ordinary entity updates.
   if (tick === 1) for (const st0 of scenario.start || []) {
@@ -75,7 +126,14 @@ export function stepScenario(state, scenario, opts = {}) {
   }
 
   // 1. Scripted world events for this tick.
-  (scenario.script[tick] || []).forEach((tpl, i) => push('world.event', buildWorldEvent(tpl, { id: `we-${scenario.id}-t${tick}-${i + 1}`, storyTime: now, characters: castOf(w, scenario) })));
+  const scriptedEvidence = [];
+  (scenario.script[tick] || []).forEach((tpl, i) => {
+    const we = buildWorldEvent(tpl, { id: `we-${scenario.id}-t${tick}-${i + 1}`, storyTime: now, characters: castOf(w, scenario) });
+    push('world.event', we);
+    scriptedEvidence.push(...perceptionEvidence(tpl, we));
+  });
+  // P3: what was just perceived updates held beliefs before anyone decides this minute.
+  applyEvidence(scriptedEvidence);
 
   // 2. Everyone decides on the same snapshot.
   const snapshot = castOf(w, scenario);
@@ -83,7 +141,9 @@ export function stepScenario(state, scenario, opts = {}) {
   for (const c of snapshot) occupancy[c.place] = (occupancy[c.place] || 0) + 1;
   const facts = w.scenarios?.[scenario.id]?.facts || scenario.facts || {};
   const factFlags = Object.fromEntries(Object.entries(facts).map(([k, v]) => [`${k}=${v}`, true]));
-  const situation = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep), occupancy, ...factFlags });
+  const authored = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep), occupancy, ...factFlags });
+  const situation = { ...authored, options: runtimeOptions(authored.options, mech), ...(on ? { mechanisms: mech } : {}) };
+  const actionEvidence = [];
   const decisions = [], idle = [];
   for (const ch of snapshot) {
     try { decisions.push(decide(ch, situation, { now, seed })); }
@@ -98,6 +158,7 @@ export function stepScenario(state, scenario, opts = {}) {
   for (const d of decisions) {
     const opt = situation.options.find(o => o.id === d.chosenOptionId);
     const fx = opt.effects || {};
+    const src = authored.options.find(o => o.id === opt.id).effects || {}; // authoring copy: the only place evidence lives
     const actor = w.entities.character[d.characterId];
     const actId = `act-${scenario.id}-t${tick}-${actor.id}`;
     const effects = {};
@@ -115,7 +176,8 @@ export function stepScenario(state, scenario, opts = {}) {
     }
     push('world.act', { id: actId, scenarioId: scenario.id, tick, characterId: actor.id, characterName: actor.name, storyTime: now, optionId: opt.id, label: opt.label,
       from: actor.place, to: effects.moveTo || actor.place, effects, told });
-    if (fx.emits) emitted.push([fx.emits, actor.id]);
+    if (effects.remember && src.remember?.evidence?.length) actionEvidence.push({ characterId: actor.id, memoryId: effects.remember.id, evidence: src.remember.evidence });
+    if (fx.emits) emitted.push([fx.emits, actor.id, src.emits]);
     if (fx.tellHere) {
       const me = w.entities.character[actor.id];
       const mem = [...me.memories].reverse().find(m => m.tags.includes(fx.tellHere) && m.source !== 'told');
@@ -126,9 +188,14 @@ export function stepScenario(state, scenario, opts = {}) {
     }
   }
   // 4. Consequences of actions are perceived from where people now are.
-  emitted.forEach(([tpl, actorId], i) => push('world.event', buildWorldEvent(tpl, { id: `we-${scenario.id}-t${tick}-a${i + 1}`, storyTime: now,
-    characters: castOf(w, scenario), provenance: 'simulation', actor: w.entities.character[actorId] })));
-  return { events, state: w, tick, clock: clockOf(now) };
+  emitted.forEach(([tpl, actorId, srcTpl], i) => {
+    const we = buildWorldEvent(tpl, { id: `we-${scenario.id}-t${tick}-a${i + 1}`, storyTime: now, characters: castOf(w, scenario), provenance: 'simulation', actor: w.entities.character[actorId] });
+    push('world.event', we);
+    actionEvidence.push(...perceptionEvidence(srcTpl, we));
+  });
+  // P3: what people did and what their actions caused arrives after everyone has decided, so it shapes the next minute.
+  applyEvidence(actionEvidence);
+  return { events, state: w, tick, clock: clockOf(now), mechanisms: mech, evidenceSkipped };
 }
 
 /** What one character knows: their place, state, beliefs and memories with sources. Never world truth. */
@@ -153,15 +220,22 @@ export function knowledgeMatrix(state, scenario) {
     }) }));
 }
 
-/** Run ticks in memory only. Nothing is written; the caller's state is untouched. */
+/**
+ * Run ticks in memory only. Nothing is written; the caller's state is untouched.
+ * This is the only caller that sets sandbox, i.e. the only way an experimental mechanism can run.
+ */
 export function previewScenario(state, scenario, ticks, opts = {}) {
+  opts = { ...opts, sandbox: true };
   let s = state;
   const out = [];
   for (let i = 0; i < ticks; i++) {
     if (scenarioStatus(s, scenario).done) break;
     const r = stepScenario(s, scenario, opts);
     s = r.state;
-    out.push({ clock: r.clock, tick: r.tick, events: r.events,
+    out.push({ clock: r.clock, tick: r.tick, events: r.events, mechanisms: r.mechanisms, evidenceSkipped: r.evidenceSkipped,
+      beliefUpdates: r.events.filter(e => e[0] === 'belief.update').map(e => e[1]),
+      places: scenario.cast.map(id => s.entities.character[id]?.place || ''),
+      beliefs: Object.fromEntries(scenario.cast.map(id => [id, Object.fromEntries((s.entities.character[id]?.beliefs || []).map(b => [b.claim, b.confidence]))])),
       actions: r.events.filter(e => e[0] === 'world.act').map(e => e[1]),
       worldEvents: r.events.filter(e => e[0] === 'world.event').map(e => e[1]),
       conversations: r.events.filter(e => e[0] === 'conversation.record').map(e => e[1]) });

@@ -37,7 +37,12 @@ export function validateEvent(ev) {
 }
 
 /** Pure: returns a new state. Invalid events are recorded in state.rejected, never thrown. */
-export function apply(state, ev) {
+/**
+ * opts.sandbox is set only by in-memory Preview and comparison runs. Experimental mechanisms
+ * (OD-005) are accepted there and nowhere else: the same events arriving through the saved log
+ * are rejected, so a live run can never be made under them.
+ */
+export function apply(state, ev, opts = {}) {
   const s = { ...state, seq: ev.seq };
   const p = ev.payload;
   const reject = why => ({ ...s, rejected: [...state.rejected, { seq: ev.seq, type: ev.type, why }] });
@@ -97,6 +102,10 @@ export function apply(state, ev) {
       case 'belief.update': {
         const ch = state.entities.character[p.characterId];
         if (!ch) return reject('belief update for missing character');
+        if (p.source?.type === 'experience') {
+          if (!opts.sandbox) return reject('experience-driven belief updates run only in Preview and comparisons (OD-005)');
+          if (!ch.beliefs.some(b => claimKey(b.claim) === claimKey(p.claim))) return reject('experience may only update a belief the character already holds (OD-005)');
+        }
         const ent = bump(withBelief(ch, p), ev);
         return { ...s, beliefUpdates: [...state.beliefUpdates, { ...p, seq: ev.seq, at: ev.at }], entities: putChar(state, ent) };
       }
@@ -151,9 +160,12 @@ export function apply(state, ev) {
         const prev = state.scenarios?.[p.scenarioId] || null;
         if (prev && p.tick !== prev.tick + 1) return reject(`scenario tick ${p.tick} does not follow ${prev.tick}`);
         if (!prev && p.tick !== 1) return reject('scenario must start at tick 1');
+        if ((p.mechanisms?.repeatableActions || p.mechanisms?.experienceBeliefs) && !opts.sandbox) return reject('experimental mechanisms run only in Preview and comparisons, never in a saved run (OD-005)');
         const sc = { id: p.scenarioId, tick: p.tick, storyTime: p.storyTime, clock: p.clock, status: p.status || 'PAUSED', facts: { ...(prev?.facts || p.facts || {}) } };
         const off = prev ? prev.seedOffset : p.seedOffset; // fixed by the first tick of the run
         if (off) sc.seedOffset = off;
+        const mech = prev ? prev.mechanisms : p.mechanisms; // fixed by the first tick of the run
+        if (mech?.repeatableActions || mech?.experienceBeliefs) sc.mechanisms = { repeatableActions: mech.repeatableActions === true, experienceBeliefs: mech.experienceBeliefs === true };
         return { ...s, scenario: sc, scenarios: { ...(state.scenarios || {}), [sc.id]: sc } };
       }
       // Controlled comparisons (OD-004). These three events are the ONLY things an experiment

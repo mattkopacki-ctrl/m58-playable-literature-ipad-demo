@@ -9,14 +9,20 @@ import { compileScenario } from './studio.mjs';
 import { OLD_HOUSE } from './oldhouse.mjs';
 import { digest } from './rng.mjs';
 import { EXPERIMENT_VERSION, structuralProblems, patchTarget } from './experiment-schema.mjs';
+import { FIXTURES } from './fixtures.mjs';
+import { cleanMechanisms } from './cognition.mjs';
 
-const BUILT_IN = { [OLD_HOUSE.id]: OLD_HOUSE };
+// Registry key -> scenario. A synthetic fixture has its own key but runs under the Old House's id.
+const BUILT_IN = { [OLD_HOUSE.id]: OLD_HOUSE, ...FIXTURES };
+export const MEASURES_VERSION = 'anamnesis-measures-1';
+export const LOOP_LIMITS = { overall: 0.10, character: 0.20 }; // doc 13 criterion A3
 const FIXED = '1970-01-01T00:00:00.000Z';
 const r3 = x => Math.round(x * 1000) / 1000;
 const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 
 export function scenarioChoices(state) {
-  return [[OLD_HOUSE.id, `${OLD_HOUSE.name} (built-in)`], ...Object.values(state.entities.scenario).filter(e => !e.archived).map(e => [e.id, e.name])];
+  return [[OLD_HOUSE.id, `${OLD_HOUSE.name} (built-in)`], ...Object.values(state.entities.scenario).filter(e => !e.archived).map(e => [e.id, e.name]),
+    ...Object.values(FIXTURES).map(f => [f.key, f.name])];
 }
 
 /**
@@ -25,10 +31,11 @@ export function scenarioChoices(state) {
  * project now. A built-in scenario that is not installed is installed in the temporary copy only.
  */
 export function resolveBase(events, scenarioId) {
-  const first = events.findIndex(e => e.type === 'scenario.advance' && e.payload.scenarioId === scenarioId);
+  const builtIn = BUILT_IN[scenarioId];
+  const runId = builtIn?.id ?? scenarioId;
+  const first = events.findIndex(e => e.type === 'scenario.advance' && e.payload.scenarioId === runId);
   const prefix = first < 0 ? events : events.slice(0, first);
   let state = replay(prefix);
-  const builtIn = BUILT_IN[scenarioId];
   let sandboxInstall = false;
   if (builtIn && !builtIn.cast.every(id => state.entities.character[id])) {
     if (state.entities.world[builtIn.worldId] || builtIn.cast.some(id => state.entities.character[id])) throw new Error(`${builtIn.name} is only partly present in this project, so it cannot be used as a starting point.`);
@@ -70,6 +77,7 @@ export function definitionProblems(def, base) {
     }
     if (p.kind === 'event.remove' && !scenario.script[p.minute]?.[p.index]) out.push(`There is no scripted world event number ${p.index + 1} at minute ${p.minute}.`);
     if (p.kind === 'option.remove' && !options.some(o => o.id === p.optionId)) out.push('The action option being removed does not exist in this scenario.');
+    if (p.kind === 'mechanism.set' && p.value && cleanMechanisms(scenario.mechanisms)[p.key]) out.push('That mechanism is already on in this scenario, so switching it on would compare nothing.');
   }
   return [...new Set(out)];
 }
@@ -95,12 +103,71 @@ export function applyVariant(base, patches) {
     } else if (p.kind === 'option.remove') {
       const inner = scenario.situation;
       scenario = { ...scenario, situation: world => { const s = inner(world); return { ...s, options: s.options.filter(o => o.id !== p.optionId) }; } };
+    } else if (p.kind === 'mechanism.set') {
+      scenario = { ...scenario, mechanisms: { ...cleanMechanisms(scenario.mechanisms), [p.key]: p.value === true } };
     }
   }
   return { state, scenario };
 }
 
 const hasEffect = o => !!o?.effects && Object.keys(o.effects).length > 0;
+
+/**
+ * Loop index parts for one character (doc 13 §2.1). Over their awake minutes: A-B-A (same action
+ * as two minutes ago, different from one minute ago) and the same effectful action two minutes running.
+ */
+export function loopCounts(actions, kinds) {
+  let awake = 0, aba = 0, same = 0;
+  actions.forEach((a, t) => {
+    if (kinds[t] === 'asleep') return;
+    awake++;
+    if (t >= 2 && a === actions[t - 2] && a !== actions[t - 1]) aba++;
+    else if (t >= 1 && a === actions[t - 1] && kinds[t] === 'active') same++;
+  });
+  return { awake, aba, same };
+}
+
+/** Loop index of an in-memory preview (doc 12 §1.5, safeguard 4). Reported, never enforced. */
+export function previewLoopIndex(ticks, cast) {
+  const per = cast.map(id => {
+    const acts = [], kinds = [];
+    for (const t of ticks) {
+      const sim = t.events.find(e => e[0] === 'sim.run')[1];
+      const a = t.actions.find(x => x.characterId === id);
+      acts.push(a?.optionId || '');
+      kinds.push(sim.decisions.find(d => d.characterId === id)?.inputs.character.asleep ? 'asleep' : hasEffect(sim.situation.options.find(o => o.id === a?.optionId)) ? 'active' : 'passive');
+    }
+    return loopCounts(acts, kinds);
+  });
+  const share = l => r3((l.aba + l.same) / Math.max(1, l.awake));
+  const all = per.reduce((a, l) => ({ awake: a.awake + l.awake, aba: a.aba + l.aba, same: a.same + l.same }), { awake: 0, aba: 0, same: 0 });
+  const byCharacter = Object.fromEntries(cast.map((id, c) => [id, share(per[c])]));
+  return { overall: share(all), byCharacter, over: share(all) > LOOP_LIMITS.overall || Object.values(byCharacter).some(x => x > LOOP_LIMITS.character) };
+}
+
+/** The doc 13 measures, per variant. Kept beside (not inside) the digested core so earlier recorded results still reproduce. */
+function measures(runs, cast, ticks) {
+  const n = runs.length;
+  const loop = cast.map((_, c) => runs.reduce((a, r) => ({ awake: a.awake + r.extra.loops[c].awake, aba: a.aba + r.extra.loops[c].aba, same: a.same + r.extra.loops[c].same }), { awake: 0, aba: 0, same: 0 }));
+  const all = loop.reduce((a, l) => ({ awake: a.awake + l.awake, aba: a.aba + l.aba, same: a.same + l.same }), { awake: 0, aba: 0, same: 0 });
+  const idx = l => ({ index: r3((l.aba + l.same) / Math.max(1, l.awake)), aba: r3(l.aba / Math.max(1, l.awake)), sameAgain: r3(l.same / Math.max(1, l.awake)), awakeMinutes: l.awake });
+  const maxUses = {};
+  for (const r of runs) r.extra.uses.forEach((u, c) => { for (const [opt, k] of Object.entries(u)) if (!maxUses[opt] || k > maxUses[opt].uses) maxUses[opt] = { uses: k, characterId: cast[c], seedOffset: r.seedOffset }; });
+  const beliefByMinute = {};
+  for (const id of cast) for (const claim of Object.keys(runs[0]?.extra.beliefsByMinute[0]?.[id] || {}))
+    (beliefByMinute[id] ||= {})[claim] = Array.from({ length: ticks }, (_, t) => r3(mean(runs.map(r => r.extra.beliefsByMinute[t]?.[id]?.[claim] ?? 0))));
+  const updates = runs.flatMap(r => r.extra.beliefUpdates.map(u => ({ seedOffset: r.seedOffset, ...u })));
+  const rules = (runs[0]?.extra.mustNot || []).map((rule, i) => ({ id: rule.id, label: rule.label, runs: runs.filter(r => r.extra.mustNot[i].happened).length, of: n }));
+  rules.push({ id: 'sleeper-acts', label: 'A sleeping character takes an action with an effect', runs: runs.filter(r => r.extra.sleeperActs).length, of: n });
+  return { mechanisms: runs[0]?.extra.mechanisms || cleanMechanisms(null),
+    loopIndex: { overall: idx(all), byCharacter: Object.fromEntries(cast.map((id, c) => [id, idx(loop[c])])) },
+    maxUses,
+    beliefByMinute,
+    beliefUpdates: { total: updates.length, byCharacter: Object.fromEntries(cast.map(id => [id, updates.filter(u => u.characterId === id).length])), list: updates.slice(0, 400),
+      notApplied: runs.reduce((k, r) => k + r.extra.evidenceSkipped.length, 0) },
+    outOfCharacter: rules,
+    placesByMinute: runs.map(r => r.extra.placesByMinute) };
+}
 
 /** Compact, comparable record of one in-memory run. */
 function summarizeRun(run, scenario, seedOffset) {
@@ -122,7 +189,18 @@ function summarizeRun(run, scenario, seedOffset) {
   for (const t of run.ticks) for (const a of t.actions) labels[a.optionId || ''] = a.label;
   const matrix = knowledgeMatrix(run.state, scenario).filter(r => r.event.provenance === 'author');
   const hearsay = run.ticks.reduce((n, t) => n + t.conversations.length + t.actions.reduce((m, a) => m + (a.told?.length || 0), 0), 0);
-  return { seedOffset, grid, kinds, feasible, labels, hearsay,
+  const sleeperActs = run.ticks.some(t => { const sim = t.events.find(e => e[0] === 'sim.run')[1]; const opts = Object.fromEntries(sim.situation.options.map(o => [o.id, o]));
+    return t.actions.some(a => a.optionId && hasEffect(opts[a.optionId]) && sim.decisions.find(d => d.characterId === a.characterId)?.inputs.character.asleep); });
+  const extra = {
+    loops: cast.map((_, c) => loopCounts(grid.map(r => r[c]), kinds.map(r => r[c]))),
+    uses: cast.map((_, c) => { const n = {}; grid.forEach((r, t) => { if (kinds[t][c] === 'active') n[r[c]] = (n[r[c]] || 0) + 1; }); return n; }),
+    beliefsByMinute: run.ticks.map(t => t.beliefs), placesByMinute: run.ticks.map(t => t.places),
+    beliefUpdates: run.ticks.flatMap(t => t.beliefUpdates.map(u => ({ minute: t.tick, characterId: u.characterId, claim: u.claim, before: u.before, after: u.after, direction: u.direction, strength: u.strength, memoryId: u.source?.ref || '' }))),
+    evidenceSkipped: run.ticks.flatMap(t => (t.evidenceSkipped || []).map(x => ({ minute: t.tick, ...x }))),
+    mustNot: (scenario.mustNot || []).map(rule => ({ id: rule.id, label: rule.label, happened: grid.some(row => row.some((opt, c) => opt === rule.optionId && (rule.characterId ? cast[c] === rule.characterId : true) && (rule.notCharacterId ? cast[c] !== rule.notCharacterId : true))) })),
+    sleeperActs, mechanisms: run.ticks[0]?.mechanisms || cleanMechanisms(null),
+  };
+  return { seedOffset, grid, kinds, feasible, labels, hearsay, extra,
     knowledge: matrix.map(r => ({ event: `${r.event.clock} ${r.event.title}`, how: r.cells.map(c => c.how === 'perceived' || c.how === 'did it' ? 'perceived' : c.how === 'unaware' ? 'unaware' : 'told') })),
     beliefs: Object.fromEntries(cast.map(id => [id, Object.fromEntries(run.state.entities.character[id].beliefs.map(b => [b.claim, b.confidence]))])),
     places: cast.map(id => run.state.entities.character[id].place),
@@ -195,11 +273,13 @@ export function runExperiment(def, events) {
   const problems = definitionProblems(def, base);
   if (problems.length) throw new Error(problems.join(' '));
   const cast = base.scenario.cast;
+  const extras = {};
   const variants = def.variants.map(v => {
     const runs = def.seeds.map(seedOffset => {
       const { state, scenario } = applyVariant(base, v.patches);
       return summarizeRun(previewScenario(state, scenario, def.ticks, { seedOffset }), scenario, seedOffset);
     });
+    extras[v.id] = measures(runs, cast, def.ticks);
     return { id: v.id, label: v.label, patches: v.patches, runs, aggregate: aggregate(runs, cast, def.ticks) };
   });
   const comparisons = variants.slice(1).map(v => compare(variants[0], v, cast));
@@ -209,7 +289,10 @@ export function runExperiment(def, events) {
   const core = { version: EXPERIMENT_VERSION, baseSeq: base.baseSeq, baseDigest: base.baseDigest, sandboxInstall: base.sandboxInstall, cast,
     castNames: Object.fromEntries(cast.map(id => [id, base.state.entities.character[id].name])), ticks: def.ticks, seeds: def.seeds,
     factor: patchTarget(def.variants.flatMap(v => v.patches)[0]), variants, comparisons };
-  return { ...core, resultDigest: digest(core) };
+  // resultDigest covers exactly what it covered before, so results recorded by earlier builds still
+  // reproduce. The doc 13 measures travel beside it with their own digest.
+  const measured = { version: MEASURES_VERSION, limits: LOOP_LIMITS, variants: extras, fixture: base.scenario.fixture ? base.scenario.fixtureLabel : '' };
+  return { ...core, resultDigest: digest(core), measures: { ...measured, digest: digest(measured) } };
 }
 
 /** Recompute one run in full (every event, every decision trace) for inspection. Writes nothing. */

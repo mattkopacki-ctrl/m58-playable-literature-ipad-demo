@@ -103,8 +103,16 @@ const int = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.i
 const optNum = (v, lo, hi) => (v === '' || v == null || !Number.isFinite(Number(v))) ? null : Math.max(lo, Math.min(hi, Number(v)));
 const strs = (v, max = 120) => list(v, x => str(x, max).trim()).filter(Boolean);
 const kv = v => list(v, x => ({ key: str(x?.key, 60).trim(), value: str(x?.value, 120).trim() })).filter(x => x.key);
-const channel = c => ({ name: str(c?.name, 80) || 'perceived', places: strs(c?.places), wakes: c?.wakes === true, text: str(c?.text, 1000),
-  tags: tagList(c?.tags), valence: optNum(c?.valence, -1, 1), arousal: optNum(c?.arousal, 0, 1) });
+// Experimental-mechanism fields (P1 repeat, P3 evidence, the two switches) are written only when
+// present, so scenarios that do not use them are stored exactly as before.
+export const EVIDENCE_MAX = 4;
+const evidenceList = v => list(v, e => ({ claim: str(e?.claim, 300).trim(), direction: Number(e?.direction) < 0 ? -1 : 1, strength: num(e?.strength, 0, 1, 0) }), EVIDENCE_MAX).filter(e => e.claim);
+const withEvidence = (obj, v, key = 'evidence') => { const ev = evidenceList(v); return ev.length ? { ...obj, [key]: ev } : obj; };
+// Out-of-range numbers are kept (within a sane bound) so the Studio checker can refuse them in plain words.
+const repeatRule = r => (r && typeof r === 'object' && str(r.tag, 60).trim()) ? { tag: str(r.tag, 60).trim().toLowerCase(), cooldown: int(r.cooldown, 0, 999, 0), maxUses: int(r.maxUses, 0, 999, 0),
+  ...(tagList(r.reopenOn).length ? { reopenOn: tagList(r.reopenOn) } : {}) } : null;
+const channel = c => withEvidence({ name: str(c?.name, 80) || 'perceived', places: strs(c?.places), wakes: c?.wakes === true, text: str(c?.text, 1000),
+  tags: tagList(c?.tags), valence: optNum(c?.valence, -1, 1), arousal: optNum(c?.arousal, 0, 1) }, c?.evidence);
 const worldEventData = e => ({ title: str(e?.title, 200) || 'Untitled event', place: str(e?.place, 120), truth: str(e?.truth, 4000),
   valence: num(e?.valence, -1, 1, 0), arousal: num(e?.arousal, 0, 1, 0.5), channels: list(e?.channels, channel, 20) });
 export const SCENARIO_LIMITS = { ticks: 240, events: 100, options: 40 };
@@ -115,15 +123,17 @@ const scenarioNormalizer = d => ({
   situationId: str(d.situationId, 80), facts: kv(d.facts), seedOffset: int(d.seedOffset, 0, 9999, 0),
   cast: list(d.cast, c => ({ characterId: str(c?.characterId, 80), place: str(c?.place, 120), asleep: c?.asleep === true }), 30).filter(c => c.characterId),
   events: list(d.events, (e, i) => ({ id: str(e?.id, 80) || 'ev-' + i, minute: int(e?.minute, 1, SCENARIO_LIMITS.ticks, 1), ...worldEventData(e) }), SCENARIO_LIMITS.events),
+  ...((d.mechanisms?.repeatableActions === true || d.mechanisms?.experienceBeliefs === true) ? { mechanisms: { repeatableActions: d.mechanisms.repeatableActions === true, experienceBeliefs: d.mechanisms.experienceBeliefs === true } } : {}),
   options: list(d.options, (o, i) => ({
+    ...(repeatRule(o?.repeat) ? { repeat: repeatRule(o.repeat) } : {}),
     id: str(o?.id, 80) || 'opt-' + i, label: str(o?.label, 200) || `Option ${i + 1}`, tags: tagList(o?.tags),
     beliefs: list(o?.beliefs, b => ({ claim: str(b?.claim, 300).trim(), sign: Number(b?.sign) < 0 ? -1 : 1 }), 10).filter(b => b.claim),
     requires: { awake: oneOf(o?.requires?.awake, ['any', 'awake', 'asleep'], 'awake'), places: strs(o?.requires?.places), notPlaces: strs(o?.requires?.notPlaces),
       knows: tagList(o?.requires?.knows), lacks: tagList(o?.requires?.lacks), company: o?.requires?.company === true, world: strs(o?.requires?.world, 200) },
     effects: { moveTo: str(o?.effects?.moveTo, 120),
-      remember: { text: str(o?.effects?.remember?.text, 1000), tags: tagList(o?.effects?.remember?.tags), valence: num(o?.effects?.remember?.valence, -1, 1, 0), arousal: num(o?.effects?.remember?.arousal, 0, 1, 0.3) },
+      remember: withEvidence({ text: str(o?.effects?.remember?.text, 1000), tags: tagList(o?.effects?.remember?.tags), valence: num(o?.effects?.remember?.valence, -1, 1, 0), arousal: num(o?.effects?.remember?.arousal, 0, 1, 0.3) }, o?.effects?.remember?.evidence),
       wakeWith: str(o?.effects?.wakeWith, 60).trim().toLowerCase(), tellHere: str(o?.effects?.tellHere, 60).trim().toLowerCase(), setFacts: kv(o?.effects?.setFacts),
-      emits: o?.effects?.emits ? { ...worldEventData(o.effects.emits), actorText: str(o.effects.emits.actorText, 1000), actorTags: tagList(o.effects.emits.actorTags) } : null },
+      emits: o?.effects?.emits ? withEvidence({ ...worldEventData(o.effects.emits), actorText: str(o.effects.emits.actorText, 1000), actorTags: tagList(o.effects.emits.actorTags) }, o.effects.emits.actorEvidence, 'actorEvidence') : null },
   }), SCENARIO_LIMITS.options),
 });
 

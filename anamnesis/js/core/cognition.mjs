@@ -10,6 +10,16 @@ export const SOURCE_WEIGHT = { seen: 1, retold: 0.8, told: 0.6 };
 export const ACTR_DECAY = 0.5;          // ACT-R default d (Anderson & Schooler 1991)
 export const RECALL_THRESHOLD = -0.5;   // tuned by feel; documented, not measured
 export const NOISE_SD = 0.15;
+// Experimental mechanisms (OD-005). Off by default; the runner only ever turns them on in
+// in-memory Preview and comparison runs. A decision made under one records it in its engine id.
+export const MECHANISM_KEYS = ['repeatableActions', 'experienceBeliefs'];
+export const REPEAT_COEF = 0.15;         // P1: each earlier use of a repeatable action costs this much (tuned by feel; equals the noise sd)
+export const REPEAT_LIMITS = { cooldown: [2, 240], maxUses: [1, 20] };
+export const EXPERIENCE_CREDIBILITY = 0.9; // P3: first-hand experience; same value as a memory that was seen (MEMORY_CREDIBILITY.seen)
+export const cleanMechanisms = m => ({ repeatableActions: m?.repeatableActions === true, experienceBeliefs: m?.experienceBeliefs === true });
+export const anyMechanism = m => !!(m?.repeatableActions || m?.experienceBeliefs);
+export const engineId = m => ENGINE_VERSION + (m?.repeatableActions ? '+p1' : '') + (m?.experienceBeliefs ? '+p3' : '');
+const clock = hours => { const m = Math.round(hours * 60); return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
 
 // Tags with built-in trait links. Option tags are free text; these get extra terms.
 const TRAIT_TAGS = {
@@ -94,6 +104,11 @@ export function scoreOption(ch, situation, option, ctx) {
     terms.push(term('belief', held.claim.slice(0, 60), sign * lean * BELIEF_COEF,
       `holds "${held.claim}" at ${held.confidence}; this option presumes it ${sign > 0 ? 'true' : 'false'} (coef ${BELIEF_COEF})`));
   }
+  // P1 (only when the run's switch is on): a repeatable action counts for less each time it has been done.
+  if (situation.mechanisms?.repeatableActions && option.repeat) {
+    const uses = repeatUses(ch, option.repeat.tag, ctx.now).length;
+    if (uses > 0) terms.push(term('repetition', option.repeat.tag, -REPEAT_COEF * uses, `already done ${uses} time(s); each repeat counts for less (coef ${REPEAT_COEF})`));
+  }
   const noise = hashNoise(NOISE_SD, ch.id, situation.id, option.id, ctx.seed);
   terms.push(term('noise', 'hashed noise', noise, `deterministic draw for (${ch.id}, ${situation.id}, ${option.id}, seed ${ctx.seed})`));
   const total = terms.reduce((s, t) => s + t.value, 0);
@@ -106,12 +121,36 @@ export function scoreOption(ch, situation, option, ctx) {
  * World flags are read from situation.world, which is stored with the decision so replay is exact.
  * "knows" means the character holds a memory (from any source) carrying that tag by now.
  */
-export function feasibility(ch, option, now, world = {}) {
+const repeatUses = (ch, tag, now) => (ch.memories || []).filter(m => m.at <= now && m.tags.includes(tag));
+
+/**
+ * P1 availability of a repeatable action (doc 12 §1.3). Pure. Only consulted when the run's
+ * repeatableActions switch is on; otherwise the tag keeps its once-only meaning.
+ */
+export function repeatAvailability(ch, repeat, now) {
+  const used = repeatUses(ch, repeat.tag, now);
+  const uses = used.length;
+  if (!uses) return { ok: true, why: '', uses };
+  if (uses >= repeat.maxUses) return { ok: false, why: `done ${uses} of ${repeat.maxUses} times`, uses };
+  const last = Math.max(...used.map(m => m.at));
+  const ago = Math.round((now - last) * 60);
+  if (ago < repeat.cooldown) return { ok: false, why: `done ${ago} minute(s) ago; possible again at ${clock(last + repeat.cooldown / 60)}`, uses };
+  if (repeat.reopenOn?.length && !(ch.memories || []).some(m => m.at > last && m.at <= now && m.tags.some(t => repeat.reopenOn.includes(t))))
+    return { ok: false, why: `nothing new since last time (${repeat.reopenOn.join(', ')})`, uses };
+  return { ok: true, why: '', uses };
+}
+
+export function feasibility(ch, option, now, world = {}, mechanisms = null) {
   const r = option.requires;
   if (!r) return { ok: true, why: '' };
   for (const w of r.world || []) if (!world[w]) return { ok: false, why: `world condition not met: ${w}` };
   if (r.notPlaces?.includes(ch.place)) return { ok: false, why: `already at ${ch.place}` };
   for (const tag of r.lacks || []) {
+    if (mechanisms?.repeatableActions && option.repeat?.tag === tag) {
+      const a = repeatAvailability(ch, option.repeat, now);
+      if (!a.ok) return { ok: false, why: a.why };
+      continue;
+    }
     if ((ch.memories || []).some(m => m.at <= now && m.tags.includes(tag))) return { ok: false, why: `already done: ${tag}` };
   }
   if (r.awake === true && ch.asleep) return { ok: false, why: 'asleep' };
@@ -130,7 +169,7 @@ export function decide(ch, situation, { now = 0, seed = 0 } = {}) {
   const ctx = { now, seed };
   const excluded = [];
   const open = situation.options.filter(o => {
-    const f = feasibility(ch, o, now, situation.world);
+    const f = feasibility(ch, o, now, situation.world, situation.mechanisms);
     if (!f.ok) excluded.push({ optionId: o.id, label: o.label, why: f.why });
     return f.ok;
   });
@@ -141,9 +180,10 @@ export function decide(ch, situation, { now = 0, seed = 0 } = {}) {
   ranking.forEach((r, i) => { r.probability = Math.round((exps[i] / z) * 1000) / 1000; });
   const chosen = ranking[0];
   const margin = ranking.length > 1 ? chosen.total - ranking[1].total : chosen.total;
-  const inputs = { character: snapshotForDecision(ch), situation, now, seed, engine: ENGINE_VERSION };
+  const engine = engineId(situation.mechanisms); // plain ENGINE_VERSION unless an experimental switch was on for this run
+  const inputs = { character: snapshotForDecision(ch), situation, now, seed, engine };
   return {
-    engine: ENGINE_VERSION, status: 'SIMULATION',
+    engine, status: 'SIMULATION',
     characterId: ch.id, characterName: ch.name, situationId: situation.id, prompt: situation.prompt,
     chosenOptionId: chosen.optionId, chosenLabel: chosen.label,
     margin: Math.round(margin * 1000) / 1000,
@@ -233,6 +273,36 @@ export function updateBelief(ch, claim, evidence) {
     ],
     status: 'SIMULATION',
   };
+}
+
+/**
+ * P3 (doc 12 §2.4–2.5): belief updates one character draws from what they experienced this minute.
+ * items = [{ memoryId, evidence: [{claim, direction, strength}] }], in the order received. Pure.
+ * Only claims the character ALREADY holds are updated (OD-005); nothing here can create a belief.
+ * At most one update per claim: the strongest entry is used, the rest are listed as not applied.
+ * `taken` lists claims already updated earlier in the same minute; evidence on those is skipped.
+ * updateBelief itself is unchanged; credibility is the fixed first-hand value.
+ */
+export function experienceUpdates(ch, items, taken = []) {
+  const byClaim = new Map();
+  const skipped = [];
+  for (const it of items || []) for (const e of it.evidence || []) {
+    const entry = { memoryId: it.memoryId, claim: String(e.claim || '').trim(), direction: e.direction < 0 ? -1 : 1, strength: clamp(Number(e.strength) || 0, 0, 1) };
+    const held = (ch.beliefs || []).find(b => sameClaim(b.claim, entry.claim));
+    if (!held) { skipped.push({ ...entry, characterId: ch.id, why: 'claim not held; experience does not create beliefs' }); continue; }
+    if (taken.some(c => sameClaim(c, held.claim))) { skipped.push({ ...entry, characterId: ch.id, why: 'not applied (same claim, same minute)' }); continue; }
+    const key = held.claim.trim().toLowerCase();
+    if (!byClaim.has(key)) byClaim.set(key, { claim: held.claim, entries: [] });
+    byClaim.get(key).entries.push(entry);
+  }
+  const updates = [];
+  for (const { claim, entries } of byClaim.values()) {
+    const best = entries.reduce((a, b) => (b.strength > a.strength ? b : a));
+    const u = updateBelief(ch, claim, { direction: best.direction, strength: best.strength, credibility: EXPERIENCE_CREDIBILITY, source: { type: 'experience', ref: best.memoryId } });
+    const notApplied = entries.filter(e => e !== best).map(e => ({ memoryId: e.memoryId, direction: e.direction, strength: e.strength, why: 'not applied (same claim, same minute)' }));
+    updates.push(notApplied.length ? { ...u, notApplied } : u);
+  }
+  return { updates, skipped };
 }
 
 /**

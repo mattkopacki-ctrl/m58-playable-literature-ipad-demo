@@ -10,7 +10,9 @@ export const PATCH_KINDS = {
   'belief.set': 'One character’s confidence in one claim',
   'event.remove': 'One scripted world event is present or absent',
   'option.remove': 'One action option is present or absent',
+  'mechanism.set': 'One experimental mechanism switched on (OD-005: comparisons and Preview only; the control keeps it off)',
 };
+export const MECHANISM_LABELS = { repeatableActions: 'P1 · Repeatable actions', experienceBeliefs: 'P3 · Experience-driven beliefs' };
 export const CHARACTER_PATHS = /^(traits\.(openness|conscientiousness|extraversion|agreeableness|neuroticism)|values\.(safety|truth|loyalty|ambition|freedom|compassion|control|belonging)|place|asleep)$/;
 
 const str = (v, max) => (typeof v === 'string' ? v : v == null ? '' : String(v)).slice(0, max);
@@ -22,6 +24,7 @@ function normPatch(p) {
   if (kind === 'belief.set') return { kind, characterId: str(p.characterId, 80), claim: str(p.claim, 300).trim(), confidence: Math.max(0, Math.min(1, Number(p.confidence) || 0)) };
   if (kind === 'event.remove') return { kind, minute: int(p.minute, 1, LIMITS.ticks, 1), index: int(p.index, 0, 99, 0) };
   if (kind === 'option.remove') return { kind, optionId: str(p.optionId, 80) };
+  if (kind === 'mechanism.set') return { kind, key: str(p.key, 40), value: p.value === true || p.value === 'true' };
   return { kind: '' };
 }
 
@@ -44,6 +47,7 @@ export function patchTarget(p) {
   if (p.kind === 'belief.set') return `${p.kind}|${p.characterId}|${p.claim.toLowerCase()}`;
   if (p.kind === 'event.remove') return `${p.kind}|${p.minute}|${p.index}`;
   if (p.kind === 'option.remove') return `${p.kind}|${p.optionId}`;
+  if (p.kind === 'mechanism.set') return `${p.kind}|${p.key}`;
   return 'invalid';
 }
 
@@ -63,5 +67,7 @@ export function structuralProblems(def) {
   const sig = def.variants.map(v => JSON.stringify(v.patches));
   if (new Set(sig).size !== sig.length) out.push('Two variants are identical.');
   for (const p of patches) if (p.kind === 'character.set' && !CHARACTER_PATHS.test(p.path)) out.push(`"${p.path}" is not a setting that can be varied.`);
+  for (const p of patches) if (p.kind === 'mechanism.set' && !Object.hasOwn(MECHANISM_LABELS, p.key)) out.push(`"${p.key}" is not an experimental mechanism.`);
+  if (def.variants[0]?.patches.some(p => p.kind === 'mechanism.set' && p.value)) out.push('The first variant is the control: it must leave the mechanism off.');
   return out;
 }
