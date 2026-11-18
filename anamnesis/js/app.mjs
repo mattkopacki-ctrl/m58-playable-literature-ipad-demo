@@ -2,6 +2,7 @@ import { h, btn, download } from './ui.mjs';
 import { openLog, storageStatus, requestPersistence } from './core/db.mjs';
 import { replay, apply, makeEvent, buildExport, parseExport } from './core/store.mjs';
 import { seedEvents } from './core/seed.mjs';
+import { toBase64, verifyOriginals } from './core/ingest.mjs';
 import { MODULES } from './views/common.mjs';
 import { libraryView, inboxView, worldsView, themesView } from './views/entities.mjs';
 import { charactersView } from './views/characters.mjs';
@@ -62,22 +63,28 @@ function parseRoute() {
 
 function go(route, id) { location.hash = `#/${route}${id ? '/' + id : ''}`; }
 
-function exportLog() {
+async function exportLog() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  download(`anamnesis-os-${stamp}.json`, JSON.stringify(buildExport(app.events), null, 2));
+  // Include the exact bytes of every imported original so a backup is complete on its own.
+  const originals = (await app.log.allOriginals()).map(o => ({ sha256: o.sha256, mime: o.mime, size: o.size, name: o.name, base64: toBase64(new Uint8Array(o.bytes)) }));
+  download(`anamnesis-os-${stamp}.json`, JSON.stringify(buildExport(app.events, originals), null, 2));
   try { localStorage.setItem('anamnesis:lastExport', new Date().toISOString()); } catch { /* private mode */ }
-  setStatus(`Export of ${app.events.length} events requested. Verify the file in Files before relying on it.`);
+  setStatus(`Export of ${app.events.length} events and ${originals.length} original file(s) requested. Verify the file in Files before relying on it.`);
 }
 
 async function importLog(file) {
   try {
-    if (file.size > 25_000_000) throw new Error('file larger than 25 MB');
-    const events = parseExport(JSON.parse(await file.text()));
+    if (file.size > 200_000_000) throw new Error('file larger than 200 MB');
+    const data = JSON.parse(await file.text());
+    const events = parseExport(data);
+    const originals = await verifyOriginals(data.originals || []); // every original must match its hash, or nothing is imported
     const next = replay(events);
-    if (!confirm(`Replace the current log (${app.events.length} events) with ${events.length} imported events? Export first if unsure.`)) return;
+    const missing = Object.values(next.entities.inbox).filter(i => i.file && !originals.some(o => o.sha256 === i.file.sha256)).length;
+    if (!confirm(`Replace the current log (${app.events.length} events) with ${events.length} imported events and ${originals.length} original file(s)?${missing ? ` ${missing} imported item(s) have no original file in this backup.` : ''} Export first if unsure.`)) return;
+    for (const o of originals) await app.log.putOriginal(o);
     await app.log.replaceAll(events);
     app.events = events; app.state = next; app.scratch = {};
-    setStatus(`Imported ${events.length} events (${next.rejected.length} rejected during replay).`);
+    setStatus(`Imported ${events.length} events and ${originals.length} original file(s) (${next.rejected.length} rejected during replay)${missing ? `; ${missing} item(s) lack their original file` : ''}.`);
     render();
   } catch (err) { setStatus(`Import rejected: ${err.message}`); }
 }
@@ -95,7 +102,7 @@ function render() {
   for (const a of document.querySelectorAll('#nav a')) a.setAttribute('aria-current', a.dataset.route === route ? 'page' : 'false');
   const ctx = {
     state: app.state, events: app.events, params, query, scratch: (app.scratch[route] ||= {}), storage: app.storage,
-    dispatch, go, status: setStatus, rerender: render, exportLog, getState: () => app.state, readLog: () => app.log.all(), lastExport, theme,
+    dispatch, go, status: setStatus, rerender: render, exportLog, getState: () => app.state, readLog: () => app.log.all(), putOriginal: r => app.log.putOriginal(r), getOriginal: h => app.log.getOriginal(h), allOriginals: () => app.log.allOriginals(), lastExport, theme,
     persist: async () => { const ok = await requestPersistence(); await refreshStorage(); setStatus(ok ? 'Persistent storage granted.' : 'Browser declined persistent storage. Add to Home Screen and export regularly.'); render(); },
   };
   const scrollY = window.scrollY;

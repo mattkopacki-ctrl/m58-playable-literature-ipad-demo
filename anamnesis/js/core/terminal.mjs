@@ -40,6 +40,7 @@ export const HELP = [
   'analyze <library title>      text metrics',
   'triage <inbox title> <NEW|TRIAGED|FILED|REJECTED>',
   'stage <inbox title> <OBSERVED|HYPOTHESIZED|TESTED|ELIGIBLE>   move a research item along',
+  'files                        imported research files with hashes',
   'intel                        health checks',
   'log [n]                      last n events (default 10)',
   'stats                        counts',
@@ -239,6 +240,11 @@ export function runCommand(line, { state, events = [] }) {
       if (!gate.ok) { say(`${item.title}: cannot move ${item.stage} → ${to}`, ...gate.why.map(w => '  ' + w)); break; }
       actions.push({ type: 'dispatch', event: 'entity.update', payload: { kind: 'inbox', id: item.id, patch: { stage: to } } });
       say(`${item.title}: ${item.stage} → ${to}`);
+      break;
+    }
+    case 'files': {
+      const items = liveList(state, 'inbox').filter(i => i.file);
+      say(`${items.length} imported file(s)`, ...items.map(i => `  ${i.file.kind.padEnd(8)} ${i.file.name.padEnd(28)} ${i.file.sha256.slice(0, 16)}…  ${i.file.extraction.warnings.length ? i.file.extraction.warnings.length + ' warning(s)' : 'ok'}`));
       break;
     }
     case 'intel': {

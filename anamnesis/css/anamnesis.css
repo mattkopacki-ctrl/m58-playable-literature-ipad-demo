@@ -176,3 +176,6 @@ pre.original { max-height: 240px; overflow: auto; white-space: pre-wrap; font: 1
 .channel { border-color: var(--accent2); }
 .sticky-save { position: sticky; bottom: 2.4rem; background: var(--panel); padding: .5rem 0; z-index: 2; }
 .preview { border-left: 3px solid var(--violet); padding-left: .8rem; margin-top: .6rem; }
+
+.hash { word-break: break-all; font-size: .78rem; }
+.import-file { margin: .2rem 0 .1rem; }

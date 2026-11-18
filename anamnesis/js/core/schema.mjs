@@ -40,7 +40,8 @@ const normalizers = {
     claim: str(d.claim, 4000), excerpt: str(d.excerpt, 8000), notes: str(d.notes, 8000),
     evidence: oneOf(d.evidence, EVIDENCE, 'UNREVIEWED'), status: oneOf(d.status, INBOX_STATUS, 'NEW'),
     tags: tagList(d.tags), links: list(d.links, x => str(x, 80)).filter(Boolean),
-    stage: oneOf(d.stage, RESEARCH_STAGES, 'OBSERVED'), original: str(d.original, 200000), capturedAt: str(d.capturedAt, 40),
+    stage: oneOf(d.stage, RESEARCH_STAGES, 'OBSERVED'), original: str(d.original, 1000000), capturedAt: str(d.capturedAt, 40),
+    file: fileMeta(d.file),
     hypothesis: str(d.hypothesis, 4000), test: str(d.test, 4000), testResult: oneOf(d.testResult, TEST_RESULTS, 'NONE'),
     annotations: list(d.annotations, a => ({ category: oneOf(a.category, ANNOTATION_CATEGORIES, 'event'), note: str(a.note, 2000), quote: str(a.quote, 2000) }), 300),
   }),
@@ -86,6 +87,16 @@ const normalizers = {
     evidence: oneOf(d.evidence, EVIDENCE, 'UNREVIEWED'), tags: tagList(d.tags),
   }),
 };
+
+// ---- Imported file provenance (T-026). Null when the item was not imported from a file.
+function fileMeta(f) {
+  if (!f || typeof f !== 'object' || !/^[0-9a-f]{64}$/.test(f.sha256 || '')) return null;
+  const x = f.extraction || {};
+  return { name: str(f.name, 300), size: num(f.size, 0, 1e10, 0), mime: str(f.mime, 100), kind: oneOf(f.kind, ['markdown', 'text', 'pdf'], 'text'), sha256: f.sha256,
+    lastModified: str(f.lastModified, 40),
+    extraction: { method: str(x.method, 300), pages: x.pages == null ? null : num(x.pages, 0, 1e6, 0), chars: num(x.chars, 0, 1e9, 0), truncated: x.truncated === true,
+      warnings: list(x.warnings, w => str(w, 500), 20) } };
+}
 
 // ---- Authored scenarios (T-028). Pure data; js/core/studio.mjs compiles it for the runner.
 const int = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };

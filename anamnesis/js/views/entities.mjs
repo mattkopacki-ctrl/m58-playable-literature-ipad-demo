@@ -4,7 +4,8 @@ import { EVIDENCE, EVIDENCE_LABEL, INBOX_STATUS, displayName } from '../core/sch
 import { analyzeText } from '../core/analyzer.mjs';
 import { resolveRef } from '../core/store.mjs';
 import { RESEARCH_STAGES, STAGE_LABEL, TEST_RESULTS, ANNOTATION_CATEGORIES, stageCheck } from '../core/research.mjs';
-import { digest } from '../core/rng.mjs';
+import { digest, uid } from '../core/rng.mjs';
+import { buildIngest, findImported, sha256Hex } from '../core/ingest.mjs';
 import { table, fmtTime } from '../ui.mjs';
 
 function simpleForm(ctx, kind, ent, fields, toPatch, extra = []) {
@@ -34,7 +35,11 @@ export function inboxView(ctx) {
   const filters = h('div', { class: 'chips', role: 'group', 'aria-label': 'Filter by status' },
     ['ALL', ...INBOX_STATUS].map(s => h('a', { href: `#/inbox${ctx.params[0] ? '/' + ctx.params[0] : ''}?status=${s}`, class: `chip ${s === statusFilter ? 'on' : ''}` }, s)));
   return workbench(ctx, {
-    kind: 'inbox', route: 'inbox', title: 'Research Inbox', extraTop: filters,
+    kind: 'inbox', route: 'inbox', title: 'Research Inbox',
+    extraTop: h('div', {}, h('label', { class: 'btn small import-file' }, 'Import file…',
+      h('input', { type: 'file', multiple: true, accept: '.md,.markdown,.txt,.pdf,text/markdown,text/plain,application/pdf', class: 'visually-hidden',
+        onchange: e => { const files = [...e.target.files]; e.target.value = ''; importFiles(ctx, files); } })),
+      h('p', { class: 'hint' }, 'Markdown, text or PDF. The original file is kept unchanged.'), filters),
     filter: statusFilter === 'ALL' ? null : e => e.status === statusFilter,
     sub: e => `${STAGE_LABEL[e.stage]} · ${e.status} · ${EVIDENCE_LABEL[e.evidence]}`,
     newData: () => ({ title: 'New finding', status: 'NEW' }),
@@ -61,13 +66,14 @@ export function inboxView(ctx) {
             field('Hypothesis', textarea('hypothesis', ent.hypothesis, 2), 'What you expect to be true in a story or simulation if this finding holds.'),
             field('How it was tested', textarea('test', ent.test, 2), 'For example: a controlled comparison of two variants, or a simulation run and what was measured.'),
             field('Test result', select('testResult', ent.testResult, TEST_RESULTS))),
-          h('fieldset', {}, h('legend', {}, 'Original (preserved)'),
+          h('fieldset', {}, h('legend', {}, ent.file ? 'Text extracted from the imported file (preserved)' : 'Original (preserved)'),
             ent.original ? h('div', {}, h('p', { class: 'mono dim' }, `captured ${fmtTime(ent.capturedAt)} · ${ent.original.length} characters · digest ${digest(ent.original)} · read-only`),
               h('pre', { class: 'original' }, ent.original))
               : field('Paste the source text', textarea('original', '', 5, { class: 'prose' }), 'Saved once, then kept unchanged with its capture time. Work on it through the excerpt, annotations and hypothesis.')),
           field('Tags', input('tags', ent.tags.join(' '))),
           linkBox,
         ], d => ({ ...d, links: d.links || [] })),
+        filePanel(ctx, ent),
         annotationPanel(ctx, ent));
     },
   });
@@ -147,4 +153,55 @@ function annotationPanel(ctx, ent) {
     ent.annotations.length ? table(['Category', 'Note', 'Quote', ''], ent.annotations.map((a, i) => [a.category, a.note, a.quote || '—',
       btn('Remove', () => saveEntity(ctx, 'inbox', ent, { annotations: ent.annotations.filter((_, j) => j !== i) }), 'small danger')])) : h('p', { class: 'dim' }, 'None yet. Tag what the source shows: characters, desires, conflict, events, causality, world rules, narrative questions, emotional shifts, motifs, themes.'),
     form);
+}
+
+async function importFiles(ctx, files) {
+  const msgs = []; let last = null;
+  for (const f of files) {
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const r = await buildIngest({ name: f.name, type: f.type, size: f.size, lastModified: f.lastModified, bytes });
+      const dup = findImported(ctx.getState(), r.original.sha256);
+      if (dup) { msgs.push(`${f.name}: already imported as “${dup.title}”`); last = dup.id; continue; }
+      await ctx.putOriginal(r.original); // stored first, so the log never points at a missing original
+      const id = uid('inbox');
+      await ctx.dispatch('entity.create', { kind: 'inbox', id, data: r.data }, { silent: true });
+      const w = r.data.file.extraction.warnings.length;
+      msgs.push(`${f.name}: imported${w ? ` with ${w} warning(s)` : ''}`); last = id;
+    } catch (err) { msgs.push(`${f.name}: ${err.message}`); }
+  }
+  ctx.status(msgs.join(' · ') || 'No file chosen.');
+  if (last) ctx.go('inbox', last); else ctx.rerender();
+}
+
+const size = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(2)} MB`;
+
+function filePanel(ctx, ent) {
+  const f = ent.file;
+  if (!f) return null;
+  const check = ctx.scratch.fileCheck?.[ent.id];
+  const x = f.extraction;
+  return panel('Imported file · provenance (read-only)',
+    table(['Item', 'Value'], [
+      ['File', f.name], ['Type', `${f.kind} (${f.mime})`], ['Size', size(f.size)], ['SHA-256', h('span', { class: 'mono hash' }, f.sha256)],
+      ['File date', f.lastModified ? fmtTime(f.lastModified) : 'not provided by the device'], ['Imported', fmtTime(ent.capturedAt)],
+      ['Text extraction', x.method], ...(x.pages != null ? [['Pages found', String(x.pages)]] : []), ['Characters extracted', `${x.chars.toLocaleString('en')}${x.truncated ? ' (text view truncated; file complete)' : ''}`],
+    ]),
+    x.warnings.length ? h('div', {}, h('p', {}, badge(`${x.warnings.length} EXTRACTION WARNING${x.warnings.length > 1 ? 'S' : ''}`, 'warn')), h('ul', { class: 'plain dim' }, x.warnings.map(w => h('li', {}, w)))) : null,
+    h('div', { class: 'row' },
+      btn('Download original', async () => {
+        const o = await ctx.getOriginal(f.sha256);
+        if (!o) return ctx.status('The original file is not stored in this browser. Import a backup that contains it.');
+        const a = h('a', { href: URL.createObjectURL(new Blob([o.bytes], { type: f.mime })), download: f.name });
+        document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        ctx.status(`Download of ${f.name} requested.`);
+      }, 'small'),
+      btn('Check original', async () => {
+        const o = await ctx.getOriginal(f.sha256);
+        const ok = !!o && await sha256Hex(new Uint8Array(o.bytes)) === f.sha256;
+        (ctx.scratch.fileCheck ||= {})[ent.id] = { ok, missing: !o };
+        ctx.status(ok ? 'Original file present and unchanged (SHA-256 matches).' : o ? 'Original file does NOT match its recorded hash.' : 'Original file is missing from this browser.');
+        ctx.rerender();
+      }, 'small')),
+    check ? h('p', { class: 'file-check' }, badge(check.ok ? 'ORIGINAL VERIFIED' : check.missing ? 'ORIGINAL MISSING' : 'HASH MISMATCH', check.ok ? 'ok' : 'bad')) : null);
 }

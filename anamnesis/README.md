@@ -8,8 +8,9 @@ Plain HTML + ES modules. No dependencies, no build step, no network calls, no AI
 ```sh
 cd anamnesis
 python3 -m http.server 8058 --bind 127.0.0.1   # then open http://127.0.0.1:8058/
-npm test                                        # 15 core unit tests (node --test)
-npm run smoke                                   # 24 browser checks at iPad Pro 11 size (needs Playwright + the server)
+npm test                                        # core unit tests (node --test)
+npm run smoke                                   # browser checks at iPad Pro 11 size (needs Playwright + the server)
+npm run sw                                      # after changing shipped files: regenerate the offline file list
 ```
 
 ES modules need an HTTP origin; opening `index.html` from `file://` will not work.
@@ -19,13 +20,13 @@ ES modules need an HTTP origin; opening `index.html` from `file://` will not wor
 | Module | What works in Build 001 |
 |---|---|
 | Library | Manuscripts/references with text, tags; jump to Analyzer |
-| Research Inbox | Structured findings: source, URL, claim, excerpt, notes, evidence status, triage (NEW/TRIAGED/FILED/REJECTED), links to entities |
+| Research Inbox | Structured findings with evidence status, triage, stage progression (Observed → Hypothesized → Tested → Eligible), annotations, links. Import Markdown, text or PDF: exact original bytes kept by SHA-256, provenance read-only, included in exports and hash-checked on import |
 | Analyzer | Words, sentences, Flesch, dialogue %, question %, dread-lexicon tension per paragraph, top words, character mentions |
 | Characters | Big Five traits, 8 weighted values, goals, fears, beliefs, memory traces with ACT-R activation; **Decision Lab** |
 | Worlds | Summary, rules, places, residents |
 | Plots | Beats with characters, themes, tension; reorder; tension arc |
 | Themes | Statement, dramatic question, motifs; which beats carry it |
-| Simulator | Run one situation across a cast; records every decision trace; divergence label; run history |
+| Simulator | Old House five-character scenario; Scenario Studio for authoring your own (cast, places, facts, world events with perception channels, options with conditions and effects); in-memory Preview that writes nothing; free one-situation runs |
 | Intelligence | Counts, health checks (broken links, untriaged research, unverified decisions…), evidence mix, notes, event log |
 | Terminal | `help`, `ls`, `show`, `new`, `decide … --record`, `analyze`, `triage`, `intel`, `log`, `go`, `export` |
 

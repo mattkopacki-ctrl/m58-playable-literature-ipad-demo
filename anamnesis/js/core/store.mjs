@@ -59,6 +59,7 @@ export function apply(state, ev) {
         if (p.kind === 'inbox') {
           // Originals are preserved: once captured, the text and its capture time never change.
           if (cur.original && merged.original !== cur.original) return reject('the captured original is preserved and cannot be edited');
+          if (JSON.stringify(cur.file) !== JSON.stringify(merged.file)) return reject('imported file provenance is preserved and cannot be edited');
           merged.capturedAt = cur.original ? cur.capturedAt : (merged.original ? ev.at : '');
           const gate = stageCheck(merged, cur.stage, merged.stage);
           if (!gate.ok) return reject(`research stage ${merged.stage}: ${gate.why.join('; ')}`);
@@ -193,8 +194,11 @@ export function resolveRef(state, ref) {
 
 export const EXPORT_FORMAT = 'anamnesis-os-export-v1';
 
-export function buildExport(events) {
-  return { format: EXPORT_FORMAT, exportedAt: new Date().toISOString(), count: events.length, events };
+/** originals (optional): [{ sha256, mime, size, name, base64 }] — exact bytes of imported files. */
+export function buildExport(events, originals = []) {
+  const out = { format: EXPORT_FORMAT, exportedAt: new Date().toISOString(), count: events.length, events };
+  if (originals.length) out.originals = originals;
+  return out;
 }
 
 export function parseExport(data) {

@@ -587,3 +587,79 @@ test('T-028 a character with no possible action is logged as idle, not a crash',
   assert.match(theo.why, /not at Kitchen/);
   assert.equal(s.simruns.at(-1).idle.length, 1);
 });
+
+import { buildIngest, extractPdfText, textFromContent, decodeText, markdownMeta, sha256Hex, verifyOriginals, toBase64, findImported, detectKind } from '../js/core/ingest.mjs';
+import { deflateSync } from 'node:zlib';
+
+const enc = s => new TextEncoder().encode(s);
+function makePdf(content, { flate = false, extraObj = '' } = {}) {
+  const body = flate ? deflateSync(Buffer.from(content, 'latin1')) : Buffer.from(content, 'latin1');
+  const head = Buffer.from(`%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n${extraObj}4 0 obj << /Length ${body.length}${flate ? ' /Filter /FlateDecode' : ''} >>\nstream\n`, 'latin1');
+  return new Uint8Array(Buffer.concat([head, body, Buffer.from('\nendstream\nendobj\ntrailer << /Root 1 0 R >>\n%%EOF\n', 'latin1')]));
+}
+const CONTENT = 'BT /F1 12 Tf 72 720 Td (The cellar door opened.) Tj 0 -14 Td [(Nobody ) -250 (was) 40 ( there.)] TJ T* <546865206b6e6f636b> Tj (s \\(three\\) came again.) Tj ET';
+
+test('T-026 PDF text: plain and Flate streams, literal escapes, hex strings, TJ spacing', async () => {
+  for (const flate of [false, true]) {
+    const r = await extractPdfText(makePdf(CONTENT, { flate }));
+    assert.equal(r.pages, 1);
+    assert.equal(r.streamsRead, 1);
+    assert.match(r.text, /The cellar door opened\./);
+    assert.match(r.text, /Nobody was there\./);
+    assert.match(r.text, /The knocks \(three\) came again\./);
+    assert.deepEqual(r.warnings, []);
+  }
+  assert.equal(textFromContent('<< /MCID 0 >> BDC BT (Hi) Tj ET EMC').trim(), 'Hi', 'dictionaries are not read as hex strings');
+});
+
+test('T-026 PDF limits are reported, never hidden', async () => {
+  const enc1 = await extractPdfText(makePdf(CONTENT, { extraObj: '5 0 obj << /Filter /Standard /V 1 >> endobj\ntrailer << /Encrypt 5 0 R >>\n' }));
+  assert.equal(enc1.text, ''); assert.match(enc1.warnings[0], /encrypted/);
+  const img = await extractPdfText(makePdf('q 100 0 0 100 0 0 cm /Im1 Do Q'));
+  assert.match(img.warnings.join(' '), /No text found/);
+  const garbled = await extractPdfText(makePdf('BT <0012003400560078009a00bc00de00f0> Tj ET'));
+  assert.match(garbled.warnings.join(' '), /garbled/);
+});
+
+test('T-026 ingest Markdown and text: exact original bytes, hash, title, provenance', async () => {
+  const md = enc('---\ntitle: "On retelling"\n---\n# Biased retellings\n\nRetelling shifts memory. [link](https://example.org)\n');
+  const r = await buildIngest({ name: 'retelling.md', type: '', size: md.length, lastModified: Date.UTC(2026, 10, 1), bytes: md });
+  assert.equal(r.data.title, 'On retelling');
+  assert.equal(r.data.original, new TextDecoder().decode(md));
+  assert.equal(r.data.file.sha256, await sha256Hex(md));
+  assert.equal(r.data.file.sha256, r.original.sha256);
+  assert.equal(r.original.bytes, md, 'original bytes are the very bytes read');
+  assert.equal(r.data.file.lastModified, '2026-11-01T00:00:00.000Z');
+  assert.deepEqual(r.data.tags, ['imported', 'markdown']);
+  assert.equal(r.data.stage, 'OBSERVED');
+  assert.equal(markdownMeta('# A\n## B\n').headings.length, 2);
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...enc('Hello\r\nworld')]);
+  const t = await buildIngest({ name: 'note.txt', bytes: bom });
+  assert.equal(t.data.original, 'Hello\r\nworld', 'line endings kept; only the byte-order mark is dropped from the text view');
+  assert.match(t.data.file.extraction.warnings[0], /Byte-order mark/);
+  assert.match(decodeText(new Uint8Array([0x63, 0x61, 0x66, 0xe9])).warnings[0], /Latin-1/);
+  await assert.rejects(buildIngest({ name: 'pic.png', bytes: new Uint8Array([137, 80, 78, 71]) }), /only Markdown/);
+  await assert.rejects(buildIngest({ name: 'empty.md', bytes: new Uint8Array() }), /empty/);
+  assert.equal(detectKind('weird.bin', '', enc('%PDF-1.7')), 'pdf', 'PDF detected by content, not name');
+});
+
+test('T-026 imported item: provenance immutable, duplicates findable, export round-trip verifies bytes', async () => {
+  const pdf = makePdf(CONTENT, { flate: true });
+  const r = await buildIngest({ name: 'cellar.pdf', type: 'application/pdf', bytes: pdf });
+  let s = apply(replay(seeded()), makeEvent(13, 'entity.create', { kind: 'inbox', id: 'inbox-pdf', data: r.data }, '2026-11-18T06:00:00.000Z'));
+  assert.equal(s.rejected.length, 0);
+  const item = s.entities.inbox['inbox-pdf'];
+  assert.equal(item.file.kind, 'pdf'); assert.equal(item.capturedAt, '2026-11-18T06:00:00.000Z');
+  assert.match(item.original, /cellar door/);
+  assert.equal(findImported(s, r.original.sha256).id, 'inbox-pdf');
+  s = apply(s, makeEvent(14, 'entity.update', { kind: 'inbox', id: 'inbox-pdf', patch: { file: { ...item.file, name: 'renamed.pdf' } } }));
+  assert.match(s.rejected.at(-1).why, /provenance is preserved/);
+  s = apply(s, makeEvent(15, 'entity.update', { kind: 'inbox', id: 'inbox-pdf', patch: { source: 'Anon (2026) The Cellar. Self-published.' } }));
+  assert.equal(s.entities.inbox['inbox-pdf'].source, 'Anon (2026) The Cellar. Self-published.', 'the citation stays editable');
+  const exp = JSON.parse(JSON.stringify(buildExport([], [{ sha256: r.original.sha256, mime: 'application/pdf', size: pdf.length, name: 'cellar.pdf', base64: toBase64(pdf) }])));
+  const back = await verifyOriginals(exp.originals);
+  assert.deepEqual([...back[0].bytes], [...pdf]);
+  exp.originals[0].base64 = toBase64(enc('tampered'));
+  await assert.rejects(verifyOriginals(exp.originals), /does not match its recorded hash/);
+  assert.equal(normalize('inbox', { file: { sha256: 'nothex' } }).file, null);
+});

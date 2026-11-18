@@ -142,6 +142,35 @@ await page.locator('.prompt-in').press('Enter');
 await page.waitForTimeout(200);
 check('terminal inspect shows hearsay source', (await page.locator('.screen').innerText()).includes('told by Daniel Hale'));
 
+// Research ingestion (T-026): import Markdown and PDF, provenance shown, original kept and verified.
+const { deflateSync } = await import('node:zlib');
+const pdfBody = deflateSync(Buffer.from('BT /F1 12 Tf 72 720 Td (Three knocks from the cellar.) Tj ET', 'latin1'));
+const pdfBytes = Buffer.concat([Buffer.from(`%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n4 0 obj << /Length ${pdfBody.length} /Filter /FlateDecode >>\nstream\n`, 'latin1'), pdfBody, Buffer.from('\nendstream\nendobj\n%%EOF\n', 'latin1')]);
+const { createHash } = await import('node:crypto');
+const pdfHash = createHash('sha256').update(pdfBytes).digest('hex');
+await page.goto(base + '#/inbox');
+await page.locator('.import-file input[type=file]').setInputFiles([
+  { name: 'retelling-notes.md', mimeType: 'text/markdown', buffer: Buffer.from('# Retelling notes\n\nTheo changes his story after breakfast.\n') },
+  { name: 'cellar-report.pdf', mimeType: 'application/pdf', buffer: pdfBytes }]);
+await page.waitForFunction(() => Object.values(window.__anamnesis.state.entities.inbox).filter(i => i.file).length === 2);
+const imp = await page.evaluate(() => Object.values(window.__anamnesis.state.entities.inbox).filter(i => i.file).map(i => ({ t: i.title, k: i.file.kind, h: i.file.sha256, o: i.original, st: i.stage })));
+check('T-026: Markdown imported with its heading as title', imp.some(i => i.k === 'markdown' && i.t === 'Retelling notes' && i.o.includes('Theo changes his story')));
+check('T-026: PDF text extracted and hash recorded', imp.some(i => i.k === 'pdf' && i.o.includes('Three knocks from the cellar.') && i.h === pdfHash), JSON.stringify(imp.map(i => i.o.slice(0, 40))));
+const pdfItem = await page.evaluate(() => Object.values(window.__anamnesis.state.entities.inbox).find(i => i.file?.kind === 'pdf').id);
+await page.goto(base + '#/inbox/' + pdfItem);
+await page.getByRole('button', { name: 'Check original' }).click();
+await page.waitForSelector('.file-check');
+check('T-026: stored original verifies against its SHA-256', (await page.locator('.file-check').innerText()).includes('ORIGINAL VERIFIED'));
+check('T-026: provenance panel shows file, hash and method', /cellar-report\.pdf/.test(await page.locator('main').innerText()) && (await page.locator('main').innerText()).includes(pdfHash));
+if (shots) await page.screenshot({ path: `${shots}/ipad-import-pdf.png` });
+await page.goto(base + '#/inbox');
+await page.locator('.import-file input[type=file]').setInputFiles([{ name: 'again.pdf', mimeType: 'application/pdf', buffer: pdfBytes }]);
+await page.waitForTimeout(400);
+check('T-026: re-importing the same file is detected, not duplicated', (await page.locator('#status').innerText()).includes('already imported') && await page.evaluate(() => Object.values(window.__anamnesis.state.entities.inbox).filter(i => i.file).length) === 2);
+const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export' }).click()]);
+const exported = JSON.parse(await (await import('node:fs/promises')).readFile(await download.path(), 'utf8'));
+check('T-026: export carries the original file bytes', (exported.originals || []).some(o => o.sha256 === pdfHash && Buffer.from(o.base64, 'base64').equals(pdfBytes)));
+
 // Scenario Studio (T-028): author a scenario in the GUI, check, preview (nothing saved), run.
 await page.goto(base + '#/simulator');
 await page.getByRole('button', { name: '+ New scenario' }).click();
@@ -194,6 +223,9 @@ await page.waitForSelector('#verify-dec');
 const decTxt = await page.locator('#verify-dec').innerText();
 check('System Monitor: every recorded decision recomputes identically', /DECISIONS OK/.test(decTxt) && /(\d+) of \1 recomputed/.test(decTxt), decTxt);
 check('System Monitor checks write nothing to the log', evBefore === await page.evaluate(() => window.__anamnesis.events.length));
+await page.getByRole('button', { name: 'Verify original files' }).click();
+await page.waitForSelector('#verify-files');
+check('System Monitor: imported originals present and unchanged', (await page.locator('#verify-files').innerText()).includes('ORIGINALS OK'), await page.locator('#verify-files').innerText());
 if (shots) await page.screenshot({ path: `${shots}/ipad-monitor.png` });
 // Theme: navy by default, phosphor optional, choice survives reload.
 const bgOf = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
@@ -246,6 +278,29 @@ await page.waitForTimeout(200);
 const overflowPhone = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
 check('no horizontal overflow at 390px', !overflowPhone);
 if (shots) await page.screenshot({ path: `${shots}/phone-character.png` });
+
+// Database upgrade: a project saved by the schema-1 build opens in schema 2 with nothing lost.
+{
+  const ctx2 = await browser.newContext({ ...devices['iPad Pro 11'] });
+  const p2 = await ctx2.newPage();
+  p2.on('pageerror', e => errors.push('upgrade: ' + e.message));
+  await p2.goto(base + 'manifest.webmanifest');
+  await p2.evaluate(() => new Promise((res, rej) => {
+    const r = indexedDB.open('anamnesis-os', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('events', { keyPath: 'seq' });
+    r.onsuccess = () => { const tx = r.result.transaction('events', 'readwrite');
+      tx.objectStore('events').add({ seq: 1, type: 'entity.create', at: '2026-11-18T00:00:00.000Z', payload: { kind: 'world', id: 'w-old', data: { name: 'Saved before the upgrade', places: ['Hall'] } } });
+      tx.objectStore('events').add({ seq: 2, type: 'system.note', at: '2026-11-18T00:00:01.000Z', payload: { text: 'v1 note' } });
+      tx.oncomplete = () => { r.result.close(); res(); }; tx.onerror = () => rej(tx.error); };
+    r.onerror = () => rej(r.error);
+  }));
+  await p2.goto(base + '?nosw#/worlds');
+  await p2.waitForFunction(() => window.__anamnesis?.events);
+  const up = await p2.evaluate(async () => ({ n: window.__anamnesis.events.length, w: window.__anamnesis.state.entities.world['w-old']?.name, kind: window.__anamnesis.log.kind,
+    stores: await new Promise(r => { const o = indexedDB.open('anamnesis-os'); o.onsuccess = () => { r([...o.result.objectStoreNames]); o.result.close(); }; }) }));
+  check('schema-1 database upgrades to schema 2 with every event kept', up.n === 2 && up.w === 'Saved before the upgrade' && up.kind === 'indexeddb' && up.stores.includes('originals'), JSON.stringify(up));
+  await ctx2.close();
+}
 
 check('no console/page errors', errors.length === 0, errors.join(' | '));
 await browser.close();
