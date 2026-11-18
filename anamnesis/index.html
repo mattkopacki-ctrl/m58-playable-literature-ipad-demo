@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0f0c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ANAMNESIS">
+<meta name="color-scheme" content="dark">
+<title>ANAMNESIS OS</title>
+<link rel="stylesheet" href="css/anamnesis.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand"><span id="lamp" class="lamp" role="img" aria-label="Storage status"></span>
+    <strong>ANAMNESIS OS</strong><span class="dim build">BUILD 001 · MAINFRAME 58</span></div>
+  <div class="route" id="title-route" aria-live="polite"></div>
+  <div class="row tools">
+    <span id="evcount" class="mono dim">EV 0</span>
+    <button id="export" type="button" class="btn small">Export</button>
+    <label class="btn small">Import<input id="import" type="file" accept="application/json,.json" class="visually-hidden"></label>
+  </div>
+</header>
+<div class="shell">
+  <nav id="nav" class="nav" aria-label="Modules"></nav>
+  <main id="main" tabindex="-1"><p class="dim">Booting…</p></main>
+</div>
+<footer class="statusbar"><span class="mono" aria-hidden="true">STATUS&gt;</span> <span id="status" role="status"></span></footer>
+<noscript>ANAMNESIS OS needs JavaScript (ES modules).</noscript>
+<script type="module" src="js/app.mjs"></script>
+</body>
+</html>
