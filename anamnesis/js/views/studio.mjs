@@ -54,7 +54,7 @@ function collect(form, ent) {
   const on = k => (d[k] || []).length > 0;
   const cast = (d.cast || []).map(id => ({ characterId: id, place: d[`place-${id}`] || '', asleep: on(`asleep-${id}`) }));
   return {
-    name: d.name, worldId: d.worldId, prompt: d.prompt, tags: words(d.tags), start: d.start, ticks: Number(d.ticks), facts: parseKv(d.facts), cast,
+    name: d.name, worldId: d.worldId, prompt: d.prompt, tags: words(d.tags), start: d.start, ticks: Number(d.ticks), facts: parseKv(d.facts), cast, seedOffset: Number(d.seedOffset) || 0,
     events: ent.events.map((e, i) => ({ id: e.id, minute: Number(d[`e-${i}-minute`]), ...readEvent(d, `e-${i}-`, e.channels.length) })),
     options: ent.options.map((o, k) => {
       const px = `o-${k}-`;
@@ -158,7 +158,9 @@ export function studioView(ctx, ent) {
       field('Question each character answers every minute', input('prompt', ent.prompt)),
       h('div', { class: 'grid2' }, field('Situation tags (cues)', input('tags', ent.tags.join(' '))),
         h('div', { class: 'grid2' }, field('Starts at', input('start', ent.start, { type: 'time' })), field('Minutes', input('ticks', String(ent.ticks), { type: 'number', min: 1, max: 240, inputmode: 'numeric' })))),
-      field('Facts (one per line: key = value)', textarea('facts', kvText(ent.facts), 2), 'Options can require a fact (kettle=COLD) and change it.')),
+      field('Facts (one per line: key = value)', textarea('facts', kvText(ent.facts), 2), 'Options can require a fact (kettle=COLD) and change it.'),
+      field('Dice set (0–9999)', input('seedOffset', String(ent.seedOffset || 0), { type: 'number', min: 0, max: 9999, inputmode: 'numeric' }),
+        started ? `This run is fixed on dice set ${st.seedOffset}. A different number only applies to a run that has not started.` : 'Same number, same story. A different number rerolls the small random nudges in every decision. 0 is the standard set.')),
     h('fieldset', {}, h('legend', {}, `Cast (${ent.cast.length})`),
       places.length ? null : h('p', { class: 'warn' }, 'Choose a world with places to set starting positions.'),
       castable.length ? table(['In cast', 'Starts at', 'Asleep'], castable.map(c => {

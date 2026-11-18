@@ -98,7 +98,7 @@ function runtime(ent) {
   const situationId = ent.situationId || `sit-${ent.id}`;
   return { id: ent.id, name: ent.name, worldId: ent.worldId, authored: true, cast: ent.cast.map(c => c.characterId),
     start: ent.cast.map(c => ({ characterId: c.characterId, place: c.place, asleep: c.asleep })),
-    t0: hours(ent.start), maxTicks: ent.ticks, facts: Object.fromEntries(ent.facts.map(f => [f.key, f.value])), script,
+    t0: hours(ent.start), maxTicks: ent.ticks, seedOffset: ent.seedOffset || 0, facts: Object.fromEntries(ent.facts.map(f => [f.key, f.value])), script,
     situation: world => ({ id: situationId, prompt: ent.prompt, tags: ent.tags, world, options: structuredClone(options) }) };
 }
 

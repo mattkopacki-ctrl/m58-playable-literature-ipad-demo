@@ -112,7 +112,7 @@ export const SCENARIO_LIMITS = { ticks: 240, events: 100, options: 40 };
 const scenarioNormalizer = d => ({
   name: str(d.name, 200) || 'Untitled scenario', worldId: str(d.worldId, 80), prompt: str(d.prompt, 500) || 'What do you do this minute?',
   tags: tagList(d.tags), start: /^([01]\d|2[0-3]):[0-5]\d$/.test(d.start) ? d.start : '00:00', ticks: int(d.ticks, 1, SCENARIO_LIMITS.ticks, 8),
-  situationId: str(d.situationId, 80), facts: kv(d.facts),
+  situationId: str(d.situationId, 80), facts: kv(d.facts), seedOffset: int(d.seedOffset, 0, 9999, 0),
   cast: list(d.cast, c => ({ characterId: str(c?.characterId, 80), place: str(c?.place, 120), asleep: c?.asleep === true }), 30).filter(c => c.characterId),
   events: list(d.events, (e, i) => ({ id: str(e?.id, 80) || 'ev-' + i, minute: int(e?.minute, 1, SCENARIO_LIMITS.ticks, 1), ...worldEventData(e) }), SCENARIO_LIMITS.events),
   options: list(d.options, (o, i) => ({

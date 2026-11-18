@@ -149,6 +149,8 @@ export function apply(state, ev) {
         if (prev && p.tick !== prev.tick + 1) return reject(`scenario tick ${p.tick} does not follow ${prev.tick}`);
         if (!prev && p.tick !== 1) return reject('scenario must start at tick 1');
         const sc = { id: p.scenarioId, tick: p.tick, storyTime: p.storyTime, clock: p.clock, status: p.status || 'PAUSED', facts: { ...(prev?.facts || p.facts || {}) } };
+        const off = prev ? prev.seedOffset : p.seedOffset; // fixed by the first tick of the run
+        if (off) sc.seedOffset = off;
         return { ...s, scenario: sc, scenarios: { ...(state.scenarios || {}), [sc.id]: sc } };
       }
       case 'system.note':

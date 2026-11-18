@@ -663,3 +663,47 @@ test('T-026 imported item: provenance immutable, duplicates findable, export rou
   await assert.rejects(verifyOriginals(exp.originals), /does not match its recorded hash/);
   assert.equal(normalize('inbox', { file: { sha256: 'nothex' } }).file, null);
 });
+
+import { seedFor } from '../js/core/scenario.mjs';
+
+const ohRunOff = (ticks, seedOffset) => { let s = replay(ohInstall()); const evs = []; for (let i = 0; i < ticks; i++) { const r = stepScenario(s, OLD_HOUSE, { seedOffset }); evs.push(...r.events); s = r.state; } return { s, evs }; };
+
+test('T-031 seed offset 0 is byte-identical to runs made before offsets existed', () => {
+  const plain = ohRun(8), zero = ohRunOff(8, 0);
+  assert.deepEqual(zero.s, plain.s);
+  assert.ok(zero.evs.filter(e => e[0] === 'scenario.advance').every(e => !('seedOffset' in e[1])), 'no new field is written for the default dice');
+  assert.deepEqual(zero.evs.filter(e => e[0] === 'sim.run').map(e => e[1].seed), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(seedFor(5), 5); assert.equal(seedFor(5, 2), 200005);
+  // A decision recorded by an old build (seed = tick, no offset anywhere) still verifies.
+  assert.equal(verifyDecision(JSON.parse(JSON.stringify(plain.s.simruns[3].decisions[0]))).ok, true);
+});
+
+test('T-031 a non-zero offset gives different dice, deterministically, pinned for the whole run', () => {
+  const a = ohRunOff(8, 7), b = ohRunOff(8, 7), z = ohRunOff(8, 0);
+  assert.deepEqual(a.s, b.s, 'same offset, same run');
+  assert.equal(a.s.scenarios.oldhouse.seedOffset, 7);
+  assert.deepEqual(a.evs.filter(e => e[0] === 'sim.run').map(e => e[1].seed), [1, 2, 3, 4, 5, 6, 7, 8].map(t => 700000 + t));
+  const noise = run => run.s.simruns.flatMap(r => r.decisions.flatMap(d => d.ranking.map(o => o.terms.find(t => t.source === 'noise').value)));
+  assert.notDeepEqual(noise(a), noise(z), 'the hashed noise differs');
+  const strip = run => run.s.simruns.map(r => r.decisions.map(d => [...d.ranking].sort((x, y) => x.optionId.localeCompare(y.optionId)).map(o => o.terms.filter(t => t.source !== 'noise'))));
+  assert.deepEqual(strip(a)[0], strip(z)[0], 'at minute 1 everything except the noise is identical');
+  for (const run of a.s.simruns) for (const d of run.decisions) assert.equal(verifyDecision(JSON.parse(JSON.stringify(d))).ok, true);
+  // Pinned: asking for another offset mid-run is ignored.
+  let s = replay(ohInstall()); s = stepScenario(s, OLD_HOUSE, { seedOffset: 3 }).state;
+  const r2 = stepScenario(s, OLD_HOUSE, { seedOffset: 99 });
+  assert.equal(r2.events.find(e => e[0] === 'sim.run')[1].seed, 300002);
+  // The log replays to the same state, offset included.
+  const log = [...ohInstall()]; for (const [t, p] of a.evs) log.push(makeEvent(log.length + 1, t, p, FIXED));
+  assert.deepEqual(replay(log), a.s);
+  assert.equal(stepScenario(replay(ohInstall()), OLD_HOUSE, { seedOffset: -5 }).events[0][1].seedOffset, undefined, 'out-of-range offsets fall back to 0');
+});
+
+test('T-031 authored scenarios carry their dice set', () => {
+  let s = withEvent(replay(seeded()), 'entity.create', { kind: 'scenario', id: 'scn-s', data: harrowScenario({ seedOffset: 4 }) });
+  const c = compileScenario(s.entities.scenario['scn-s'], s);
+  assert.equal(c.scenario.seedOffset, 4);
+  s = stepScenario(s, c.scenario).state;
+  assert.equal(s.scenarios['scn-s'].seedOffset, 4);
+  assert.equal(s.simruns.at(-1).seed, 400001);
+  assert.equal(normalize('scenario', {}).seedOffset, 0);
+});

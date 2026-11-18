@@ -38,22 +38,35 @@ export function buildWorldEvent(template, { id, storyTime, characters, provenanc
 
 export function scenarioStatus(state, scenario) {
   const sc = state.scenarios?.[scenario.id] || null;
-  return { installed: scenario.cast.every(id => state.entities.character[id]), tick: sc?.tick || 0, done: (sc?.tick || 0) >= scenario.maxTicks,
+  return { installed: scenario.cast.every(id => state.entities.character[id]), tick: sc?.tick || 0, done: (sc?.tick || 0) >= scenario.maxTicks, seedOffset: sc?.seedOffset || 0,
     clock: sc ? sc.clock : clockOf(scenario.t0), facts: sc?.facts || scenario.facts };
 }
 
-/** One tick. Returns { events: [[type, payload]...], state } without touching storage. */
-export function stepScenario(state, scenario) {
+export const SEED_STRIDE = 100000; // larger than any tick count, so (offset, tick) pairs never collide
+export const MAX_SEED_OFFSET = 9999;
+/** Decision seed for a tick. Offset 0 is the original behaviour (seed = tick), so old runs replay unchanged. */
+export function seedFor(tick, seedOffset = 0) { return tick + seedOffset * SEED_STRIDE; }
+const cleanOffset = v => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(0, Math.min(MAX_SEED_OFFSET, n)) : 0; };
+
+/**
+ * One tick. Returns { events: [[type, payload]...], state } without touching storage.
+ * opts.seedOffset picks an independent set of dice for the whole run. It is fixed at tick 1
+ * and read back from the run's own state afterwards, so it cannot change mid-run.
+ */
+export function stepScenario(state, scenario, opts = {}) {
   const st = scenarioStatus(state, scenario);
   if (!st.installed) throw new Error(`${scenario.name} is not installed`);
   if (st.done) throw new Error(`${scenario.name} has reached its last tick (${clockOf(scenario.t0 + (scenario.maxTicks - 1) / 60)})`);
   const tick = st.tick + 1;
+  const seedOffset = tick === 1 ? cleanOffset(opts.seedOffset ?? scenario.seedOffset) : cleanOffset(state.scenarios?.[scenario.id]?.seedOffset);
+  const seed = seedFor(tick, seedOffset);
   const now = Math.round((scenario.t0 + (tick - 1) / 60) * 10000) / 10000;
   const events = [];
   let w = state;
   const push = (type, payload) => { events.push([type, payload]); w = apply(w, makeEvent(w.seq + 1, type, payload, '1970-01-01T00:00:00.000Z')); };
 
-  push('scenario.advance', { scenarioId: scenario.id, tick, storyTime: now, clock: clockOf(now), status: 'PAUSED', facts: scenario.facts });
+  // seedOffset is written only when non-zero, so runs with the default dice produce byte-identical logs to earlier builds.
+  push('scenario.advance', { scenarioId: scenario.id, tick, storyTime: now, clock: clockOf(now), status: 'PAUSED', facts: scenario.facts, ...(seedOffset ? { seedOffset } : {}) });
 
   // 0. Starting positions (authored scenarios), written as ordinary entity updates.
   if (tick === 1) for (const st0 of scenario.start || []) {
@@ -73,10 +86,10 @@ export function stepScenario(state, scenario) {
   const situation = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep), occupancy, ...factFlags });
   const decisions = [], idle = [];
   for (const ch of snapshot) {
-    try { decisions.push(decide(ch, situation, { now, seed: tick })); }
+    try { decisions.push(decide(ch, situation, { now, seed })); }
     catch (err) { idle.push({ characterId: ch.id, characterName: ch.name, why: err.message }); }
   }
-  push('sim.run', { id: `run-${scenario.id}-t${tick}`, scenarioId: scenario.id, tick, situation, now, seed: tick, decisions, idle });
+  push('sim.run', { id: `run-${scenario.id}-t${tick}`, scenarioId: scenario.id, tick, situation, now, seed, decisions, idle });
   for (const i of idle) push('world.act', { id: `act-${scenario.id}-t${tick}-${i.characterId}`, scenarioId: scenario.id, tick, characterId: i.characterId, characterName: i.characterName,
     storyTime: now, optionId: '', label: '(no feasible action)', why: i.why, from: w.entities.character[i.characterId].place, to: w.entities.character[i.characterId].place, effects: {}, told: [] });
 
@@ -141,12 +154,12 @@ export function knowledgeMatrix(state, scenario) {
 }
 
 /** Run ticks in memory only. Nothing is written; the caller's state is untouched. */
-export function previewScenario(state, scenario, ticks) {
+export function previewScenario(state, scenario, ticks, opts = {}) {
   let s = state;
   const out = [];
   for (let i = 0; i < ticks; i++) {
     if (scenarioStatus(s, scenario).done) break;
-    const r = stepScenario(s, scenario);
+    const r = stepScenario(s, scenario, opts);
     s = r.state;
     out.push({ clock: r.clock, tick: r.tick, events: r.events,
       actions: r.events.filter(e => e[0] === 'world.act').map(e => e[1]),
