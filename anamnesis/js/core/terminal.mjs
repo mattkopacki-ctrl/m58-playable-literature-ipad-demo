@@ -35,6 +35,7 @@ export const HELP = [
   'event knock                  author injects another knock at the basement door',
   'characters                   same as: ls character',
   'scenarios                    list authored scenarios and their check status',
+  'experiments                  list controlled comparisons and their latest result',
   'preview <scenario> [n]       run n minutes in memory only (nothing saved)',
   'run <scenario> [n]           run n minutes of an authored scenario (saved)',
   'analyze <library title>      text metrics',
@@ -142,6 +143,16 @@ export function runCommand(line, { state, events = [] }) {
       break;
     }
     case 'characters': return runCommand('ls character', { state, events });
+    case 'experiments': {
+      const list = Object.values(state.experiments || {});
+      say(`${list.length} controlled comparison(s)`);
+      for (const e of list) {
+        const r = e.results.at(-1)?.results, c = r?.comparisons[0];
+        say(`  ${e.def.title}`, r ? `      B differs from A in ${c.seedsWithAnyDifference}/${c.seeds} dice sets; mean ${c.differingCells.mean} of ${c.cellsPerRun} character-minutes; digest ${r.resultDigest}` : '      not run yet',
+          `      conclusion: ${e.conclusions.at(-1)?.verdict || 'none'}`);
+      }
+      break;
+    }
     case 'scenarios': {
       const list = liveList(state, 'scenario');
       say(`${list.length} authored scenario(s)`, ...list.map(e => { const c = compileScenario(e, state); return `  ${e.name.padEnd(32)} ${String(state.scenarios?.[e.id]?.tick || 0).padStart(3)}/${e.ticks} min  ${c.errors.length ? c.errors.length + ' to fix' : 'ready'}`; }));

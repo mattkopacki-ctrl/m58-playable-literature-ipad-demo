@@ -49,7 +49,7 @@ export function computeIntel(state) {
   return {
     counts: { characters: chars.length, worlds: worlds.length, plots: plots.length, themes: themes.length,
       research: inbox.length, library: liveList(state, 'library').length, decisions: state.decisions.length,
-      simruns: state.simruns.length, conversations: state.conversations.length, beliefUpdates: state.beliefUpdates.length, events: state.seq },
+      simruns: state.simruns.length, conversations: state.conversations.length, comparisons: Object.keys(state.experiments || {}).length, beliefUpdates: state.beliefUpdates.length, events: state.seq },
     evidence, stages: Object.fromEntries(RESEARCH_STAGES.map(st => [st, inbox.filter(i => i.stage === st).length])), findings,
   };
 }

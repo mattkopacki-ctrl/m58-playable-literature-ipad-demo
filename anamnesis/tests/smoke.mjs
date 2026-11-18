@@ -212,6 +212,44 @@ await page.locator('.prompt-in').press('Enter');
 await page.waitForTimeout(200);
 check('terminal lists authored scenarios', /2 authored scenario/.test(await page.locator('.screen').innerText()));
 
+// Controlled comparisons (T-027): register, run in memory, reproduce, explain, conclude. Live project untouched.
+await page.goto(base + '#/simulator');
+const liveBefore = await page.evaluate(() => { const s = window.__anamnesis.state; return JSON.stringify([s.entities.character, s.scenarios, s.worldEvents.length, s.actions.length, s.simruns.length, s.conversations.length]); });
+await page.getByRole('button', { name: 'Load the Old House example' }).click();
+await page.waitForFunction(() => location.hash === '#/simulator/exp-new');
+await page.waitForSelector('select[name="kind"]');
+check('T-027: example draft passes its checks', (await page.locator('main').innerText()).includes('READY TO REGISTER'));
+const evDraft = await page.evaluate(() => window.__anamnesis.events.length);
+await page.locator('select[name="kind"]').selectOption('option.remove');
+await page.locator('select[name="kind"]').selectOption('belief.set');
+check('T-027: editing a draft writes nothing', evDraft === await page.evaluate(() => window.__anamnesis.events.length));
+await page.locator('input[name="value"]').fill('0.2');
+await page.getByRole('button', { name: 'Register (locks the definition) ▸' }).click();
+await page.waitForFunction(() => /#\/simulator\/exp-[0-9a-f]+/.test(location.hash));
+const expId = await page.evaluate(() => location.hash.split('exp-')[1]);
+await page.getByRole('button', { name: 'Run in memory ▸' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.experiments[id].results.length === 1, expId, { timeout: 60000 });
+const exr = await page.evaluate(id => { const r = window.__anamnesis.state.experiments[id].results[0].results; return { c: r.comparisons[0], d: r.resultDigest, base: r.baseSeq }; }, expId);
+check('T-027: Old House experiment shows a measurable difference caused by the one change', exr.c.seedsWithAnyDifference > 0 && exr.c.firstDifference.characterId === 'oh-thomas' && exr.c.firstDifference.minute === 1, JSON.stringify(exr.c.firstDifference));
+await page.getByRole('button', { name: 'Show why' }).click();
+await page.waitForSelector('#why');
+check('T-027: the difference is explained by the belief term', (await page.locator('#why').innerText()).includes('The noises are just the heating'));
+if (shots) await page.screenshot({ path: `${shots}/ipad-comparison.png` });
+await page.getByRole('button', { name: 'Run again (checks it reproduces) ▸' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.experiments[id].results.length === 2, expId, { timeout: 60000 });
+check('T-027: re-run reproduces the first result exactly', await page.evaluate(id => window.__anamnesis.state.experiments[id].results[1].reproduced === true, expId));
+await page.getByRole('button', { name: 'Recompute and show' }).click();
+await page.waitForSelector('#inspect');
+check('T-027: a single run can be inspected minute by minute', (await page.locator('#inspect').innerText()).includes('02:13'));
+await page.locator('.form-plain select[name="verdict"]').selectOption('SUPPORTED');
+await page.locator('.form-plain input[name="note"]').fill('Thomas skipped the heating test in most dice sets.');
+await page.getByRole('button', { name: 'Record conclusion' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.experiments[id].conclusions.length === 1, expId);
+const liveAfter = await page.evaluate(() => { const s = window.__anamnesis.state; return JSON.stringify([s.entities.character, s.scenarios, s.worldEvents.length, s.actions.length, s.simruns.length, s.conversations.length]); });
+check('T-027: live characters, scenarios and story records are unchanged by the whole experiment', liveBefore === liveAfter);
+const expTypes = await page.evaluate(n => [...new Set(window.__anamnesis.events.slice(n).map(e => e.type))].sort().join(','), evDraft);
+check('T-027: only experiment events were written', expTypes === 'experiment.conclude,experiment.register,experiment.result', expTypes);
+
 // System Monitor: integrity checks read-only and pass.
 await page.goto(base + '#/monitor');
 const evBefore = await page.evaluate(() => window.__anamnesis.events.length);

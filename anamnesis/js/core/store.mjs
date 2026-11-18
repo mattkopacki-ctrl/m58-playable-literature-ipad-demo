@@ -2,9 +2,11 @@
 // nothing is edited in place and every change is traceable (NUE-CR-001 rule 2).
 import { KINDS, normalize } from './schema.mjs';
 import { stageCheck } from './research.mjs';
+import { normalizeExperiment, structuralProblems, VERDICTS, EXPERIMENT_VERSION } from './experiment-schema.mjs';
 
 export const EVENT_TYPES = ['entity.create', 'entity.update', 'entity.archive', 'entity.restore',
-  'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note', 'belief.update', 'conversation.record', 'world.event', 'world.act', 'scenario.advance'];
+  'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note', 'belief.update', 'conversation.record', 'world.event', 'world.act', 'scenario.advance',
+  'experiment.register', 'experiment.result', 'experiment.conclude'];
 
 export function emptyState() {
   return {
@@ -19,6 +21,7 @@ export function emptyState() {
     actions: [],
     scenario: null,
     scenarios: {},
+    experiments: {},
     notes: [],
     rejected: [],
   };
@@ -152,6 +155,36 @@ export function apply(state, ev) {
         const off = prev ? prev.seedOffset : p.seedOffset; // fixed by the first tick of the run
         if (off) sc.seedOffset = off;
         return { ...s, scenario: sc, scenarios: { ...(state.scenarios || {}), [sc.id]: sc } };
+      }
+      // Controlled comparisons (OD-004). These three events are the ONLY things an experiment
+      // persists. They never touch entities, scenarios, world events or any character.
+      case 'experiment.register': {
+        if (!p.id || state.experiments[p.id]) return reject('missing or duplicate experiment id');
+        const def = normalizeExperiment(p.def);
+        const problems = structuralProblems(def);
+        if (problems.length) return reject(`experiment not valid: ${problems.join(' ')}`);
+        if (!Number.isInteger(p.baseSeq) || typeof p.baseDigest !== 'string') return reject('experiment needs its starting point (baseSeq, baseDigest)');
+        const exp = { id: p.id, def, baseSeq: p.baseSeq, baseDigest: p.baseDigest, sandboxInstall: !!p.sandboxInstall, version: EXPERIMENT_VERSION, registeredAt: ev.at, seq: ev.seq, results: [], conclusions: [] };
+        return { ...s, experiments: { ...state.experiments, [p.id]: exp } };
+      }
+      case 'experiment.result': {
+        const exp = state.experiments[p.experimentId];
+        if (!exp) return reject('result for an unregistered experiment');
+        const r = p.results;
+        if (!r || typeof r.resultDigest !== 'string') return reject('result has no digest');
+        if (r.baseDigest !== exp.baseDigest || r.baseSeq !== exp.baseSeq) return reject('result was computed from a different starting point than the one registered');
+        const firstDigest = exp.results[0]?.results.resultDigest;
+        const entry = { seq: ev.seq, at: ev.at, results: r, reproduced: firstDigest ? firstDigest === r.resultDigest : null };
+        return { ...s, experiments: { ...state.experiments, [exp.id]: { ...exp, results: [...exp.results, entry] } } };
+      }
+      case 'experiment.conclude': {
+        const exp = state.experiments[p.experimentId];
+        if (!exp) return reject('conclusion for an unregistered experiment');
+        if (!exp.results.length) return reject('an experiment cannot be concluded before it has a recorded result');
+        if (!VERDICTS.includes(p.verdict)) return reject('verdict must be SUPPORTED, REFUTED or INCONCLUSIVE');
+        if (!String(p.note || '').trim()) return reject('a conclusion needs a written note');
+        const c = { seq: ev.seq, at: ev.at, verdict: p.verdict, note: String(p.note).slice(0, 4000), resultDigest: exp.results.at(-1).results.resultDigest };
+        return { ...s, experiments: { ...state.experiments, [exp.id]: { ...exp, conclusions: [...exp.conclusions, c] } } };
       }
       case 'system.note':
         return { ...s, notes: [...state.notes, { text: String(p.text || ''), seq: ev.seq, at: ev.at }] };

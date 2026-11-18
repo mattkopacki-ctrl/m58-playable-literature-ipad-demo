@@ -8,6 +8,7 @@ import { uid } from '../core/rng.mjs';
 import { OLD_HOUSE } from '../core/oldhouse.mjs';
 import { stepScenario, scenarioStatus, inspectCharacter, knowledgeMatrix } from '../core/scenario.mjs';
 import { studioView } from './studio.mjs';
+import { experimentsPanel, experimentDraftView, experimentView } from './experiments.mjs';
 import { compileScenario, scenarioDataFromBuiltIn } from '../core/studio.mjs';
 
 function currentSituation(ctx) {
@@ -18,6 +19,8 @@ function currentSituation(ctx) {
 }
 
 export function simulatorView(ctx) {
+  if (ctx.params[0] === 'exp-new') return experimentDraftView(ctx);
+  if (ctx.params[0]?.startsWith('exp-') && ctx.state.experiments[ctx.params[0].slice(4)]) return experimentView(ctx, ctx.state.experiments[ctx.params[0].slice(4)]);
   const authored = ctx.params[0] && ctx.state.entities.scenario[ctx.params[0]];
   if (authored && !authored.archived) return studioView(ctx, authored);
   const chars = liveList(ctx.state, 'character');
@@ -41,6 +44,7 @@ export function simulatorView(ctx) {
   return h('div', { class: 'single' },
     oldHousePanel(ctx),
     studioPanel(ctx),
+    experimentsPanel(ctx),
     panel('Free scenario · one situation, chosen cast', situationPicker(ctx), castBox, h('div', { class: 'row' }, btn('Run simulation ▸', run, 'primary'))),
     latest ? panel(`Latest run · #${latest.seq} · hour ${latest.now} · seed ${latest.seed}`,
       h('p', {}, latest.situation.prompt),

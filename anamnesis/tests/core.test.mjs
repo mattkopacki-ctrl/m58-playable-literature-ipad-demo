@@ -707,3 +707,141 @@ test('T-031 authored scenarios carry their dice set', () => {
   assert.equal(s.simruns.at(-1).seed, 400001);
   assert.equal(normalize('scenario', {}).seedOffset, 0);
 });
+
+import { runExperiment, resolveBase, applyVariant, inspectRun, definitionProblems } from '../js/core/experiment.mjs';
+import { normalizeExperiment, structuralProblems } from '../js/core/experiment-schema.mjs';
+
+const HEAT = 'The noises are just the heating';
+const expDef = over => normalizeExperiment({ title: 'Thomas and the heating', hypothesis: 'A belief a character holds changes which action they take first.',
+  prediction: 'With low confidence that the noises are the heating, Thomas will not test the heating first.', scenarioId: 'oldhouse', ticks: 8, seeds: [0, 1, 2, 3, 4, 5],
+  variants: [{ id: 'A', label: 'As written (0.85)', patches: [] }, { id: 'B', label: 'Doubts it (0.2)', patches: [{ kind: 'belief.set', characterId: 'oh-thomas', claim: HEAT, confidence: 0.2 }] }], ...over });
+
+test('T-027 isolation: running a comparison changes nothing in the live project', () => {
+  const live = ohRun(3);                       // a live Old House run in progress
+  const before = JSON.stringify(live.s), logBefore = JSON.stringify(live.log);
+  const r = runExperiment(expDef(), live.log);
+  assert.equal(JSON.stringify(live.s), before, 'live state untouched');
+  assert.equal(JSON.stringify(live.log), logBefore, 'log untouched');
+  assert.equal(replay(live.log).scenarios.oldhouse.tick, 3, 'the live run is still at minute 3');
+  assert.equal(r.baseSeq, 6, 'starts from the project as it was just before the scenario first ran');
+  assert.equal(r.sandboxInstall, false);
+  assert.equal(replay(live.log).entities.character['oh-thomas'].beliefs.find(b => b.claim === HEAT).confidence, 0.85, 'the varied belief never reaches the live character');
+});
+
+test('T-027 reproducible: same definition and log give identical results and digest', () => {
+  const a = runExperiment(expDef(), ohInstall()), b = runExperiment(expDef(), ohInstall());
+  assert.deepEqual(a, b);
+  assert.match(a.resultDigest, /^[0-9a-f]{16}$/);
+  // Not installed at all: the scenario is installed in the temporary copy only, and says so.
+  const fresh = runExperiment(expDef(), seeded());
+  assert.equal(fresh.sandboxInstall, true);
+  assert.equal(replay(seeded()).entities.character['oh-thomas'], undefined);
+  // The canonical dice set (0) of the control equals the real built-in run.
+  const real = ohRun(8).s;
+  const grid = a.variants[0].runs.find(r => r.seedOffset === 0).grid;
+  assert.deepEqual(grid, real.simruns.map(run => a.cast.map(id => real.actions.find(x => x.tick === run.tick && x.characterId === id).optionId)));
+});
+
+test('T-027 one factor only: the measured difference comes from the declared change', () => {
+  const r = runExperiment(expDef(), ohInstall());
+  const c = r.comparisons[0];
+  assert.equal(r.factor, `belief.set|oh-thomas|${HEAT.toLowerCase()}`);
+  assert.ok(c.seedsWithAnyDifference > 0);
+  assert.equal(c.firstDifference.characterId, 'oh-thomas');
+  assert.equal(c.firstDifference.minute, 1);
+  assert.equal(c.firstDifference.control, 'Switch the heating off and on to test it');
+  assert.ok(c.byCharacter['oh-thomas'] > c.byCharacter['oh-daniel']);
+  assert.equal(r.variants[0].aggregate.endBeliefs['oh-thomas'][HEAT], 0.85);
+  assert.equal(r.variants[1].aggregate.endBeliefs['oh-thomas'][HEAT], 0.2);
+  // Null experiment: setting the belief to the value it already has changes nothing at all.
+  const nul = runExperiment(expDef({ variants: [{ id: 'A', label: 'as written', patches: [] }, { id: 'B', label: 'same value', patches: [{ kind: 'belief.set', characterId: 'oh-thomas', claim: HEAT, confidence: 0.85 }] }] }), ohInstall());
+  assert.deepEqual(nul.comparisons[0].differingCells, { mean: 0, min: 0, max: 0 });
+  assert.deepEqual(nul.variants[0].runs.map(x => x.runDigest), nul.variants[1].runs.map(x => x.runDigest));
+});
+
+test('T-027 definitions that are not controlled comparisons are refused', () => {
+  const two = expDef({ variants: [{ id: 'A', patches: [] }, { id: 'B', patches: [{ kind: 'belief.set', characterId: 'oh-thomas', claim: HEAT, confidence: 0.2 }] },
+    { id: 'C', patches: [{ kind: 'character.set', characterId: 'oh-mara', path: 'values.truth', value: 0.1 }] }] });
+  assert.match(structuralProblems(two).join(' '), /more than one thing/);
+  assert.throws(() => runExperiment(two, ohInstall()), /more than one thing/);
+  assert.match(structuralProblems(expDef({ prediction: '' })).join(' '), /predicted direction before running/);
+  assert.match(structuralProblems(expDef({ variants: [{ id: 'A', patches: [] }, { id: 'B', patches: [] }] })).join(' '), /No variant changes anything|identical/);
+  assert.match(structuralProblems(expDef({ seeds: [] })).join(' '), /dice set/);
+  const base = resolveBase(ohInstall(), 'oldhouse');
+  const bad = k => definitionProblems(expDef({ variants: [{ id: 'A', patches: [] }, { id: 'B', patches: [k] }] }), base).join(' ');
+  assert.match(bad({ kind: 'character.set', characterId: 'character-ines', path: 'values.truth', value: 0.1 }), /not in this scenario/);
+  assert.match(bad({ kind: 'character.set', characterId: 'oh-mara', path: 'place', value: 'Attic' }), /not a place/);
+  assert.match(bad({ kind: 'character.set', characterId: 'oh-mara', path: 'memories', value: 1 }), /not a setting that can be varied/);
+  assert.match(bad({ kind: 'event.remove', minute: 7, index: 0 }), /no scripted world event/);
+  assert.match(bad({ kind: 'option.remove', optionId: 'nope' }), /does not exist/);
+  assert.match(definitionProblems(expDef({ ticks: 99 }), base).join(' '), /has 8 minutes/);
+  assert.equal(normalizeExperiment({ variants: [{ patches: [{ kind: 'x' }, { kind: 'y' }] }] }).variants[0].patches.length, 1, 'one change per variant');
+});
+
+test('T-027 other factor kinds: start state, removed event, removed option; base never mutated', () => {
+  const log = ohInstall(), base = resolveBase(log, 'oldhouse'), snap = JSON.stringify(base.state);
+  const v = applyVariant(base, [{ kind: 'character.set', characterId: 'oh-elise', path: 'asleep', value: false }]);
+  assert.equal(v.state.entities.character['oh-elise'].asleep, false);
+  assert.equal(JSON.stringify(base.state), snap);
+  const awake = runExperiment(expDef({ variants: [{ id: 'A', patches: [] }, { id: 'B', label: 'Elise awake', patches: [{ kind: 'character.set', characterId: 'oh-elise', path: 'asleep', value: false }] }] }), log);
+  assert.equal(awake.variants[0].aggregate.knowledge[0].told, 1, 'asleep: she learns of the first knock by being told');
+  assert.equal(awake.variants[1].aggregate.knowledge[0].perceived, 5, 'awake: she hears it herself');
+  const noKnock = runExperiment(expDef({ variants: [{ id: 'A', patches: [] }, { id: 'B', patches: [{ kind: 'event.remove', minute: 4, index: 0 }] }] }), log);
+  assert.equal(noKnock.variants[1].aggregate.knowledge.length, 1);
+  assert.ok(noKnock.variants[0].runs.every((r, i) => JSON.stringify(r.grid.slice(0, 3)) === JSON.stringify(noKnock.variants[1].runs[i].grid.slice(0, 3))), 'identical until the removed event\'s minute');
+  const noWake = runExperiment(expDef({ variants: [{ id: 'A', patches: [] }, { id: 'B', patches: [{ kind: 'option.remove', optionId: 'opt-wake' }] }] }), log);
+  assert.ok(!Object.keys(noWake.variants[1].aggregate.choiceShare['oh-daniel']).includes('opt-wake'));
+  // Authored scenario: a varied starting place also changes the scenario's own placement at minute 1.
+  let s = withEvent(replay(seeded()), 'entity.create', { kind: 'scenario', id: 'scn-x', data: harrowScenario() });
+  const alog = [...seeded(), makeEvent(13, 'entity.create', { kind: 'scenario', id: 'scn-x', data: harrowScenario() }, FIXED)];
+  const moved = runExperiment(expDef({ scenarioId: 'scn-x', ticks: 3, variants: [{ id: 'A', patches: [] }, { id: 'B', patches: [{ kind: 'character.set', characterId: 'character-theo', path: 'place', value: 'Kitchen' }] }] }), alog);
+  assert.equal(moved.variants[1].aggregate.knowledge[0].perceived > moved.variants[0].aggregate.knowledge[0].perceived || moved.comparisons[0].seedsWithAnyDifference > 0, true);
+  assert.equal(s.entities.character['character-theo'].place, '');
+});
+
+test('T-027 privacy holds inside every variant run; inspection recomputes a run exactly', () => {
+  const def = expDef();
+  const r = runExperiment(def, ohInstall());
+  for (const v of def.variants) for (const seed of [0, 3]) {
+    const run = inspectRun(def, ohInstall(), v.id, seed);
+    assert.equal(digest(run.ticks.map(t => t.events)), r.variants.find(x => x.id === v.id).runs.find(x => x.seedOffset === seed).runDigest);
+    for (const id of OLD_HOUSE.cast) for (const m of run.state.entities.character[id].memories) assert.ok(!/Source unknown|inner face/.test(m.text), 'no world truth in any memory');
+    assert.deepEqual(OLD_HOUSE.cast.filter(id => run.state.entities.character[id].memories.some(m => m.tags.includes('key'))), ['oh-daniel']);
+    for (const t of run.ticks) for (const d of t.events.find(e => e[0] === 'sim.run')[1].decisions) assert.equal(verifyDecision(JSON.parse(JSON.stringify(d))).ok, true);
+  }
+});
+
+test('T-027 only the registered definition, results and conclusion are persisted', () => {
+  const log = ohInstall();
+  let s = replay(log);
+  const def = expDef({ researchItemId: '' });
+  const base = resolveBase(log, 'oldhouse');
+  const ents = JSON.stringify(s.entities);
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.conclude', { experimentId: 'exp-1', verdict: 'SUPPORTED', note: 'x' }));
+  assert.match(s.rejected.at(-1).why, /unregistered/);
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.register', { id: 'exp-1', def, baseSeq: base.baseSeq, baseDigest: base.baseDigest, sandboxInstall: base.sandboxInstall }));
+  assert.equal(s.experiments['exp-1'].def.title, 'Thomas and the heating');
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.conclude', { experimentId: 'exp-1', verdict: 'SUPPORTED', note: 'too early' }));
+  assert.match(s.rejected.at(-1).why, /before it has a recorded result/);
+  const results = runExperiment(def, log);
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.result', { experimentId: 'exp-1', results }));
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.result', { experimentId: 'exp-1', results: runExperiment(def, log) }));
+  assert.equal(s.experiments['exp-1'].results[0].reproduced, null);
+  assert.equal(s.experiments['exp-1'].results[1].reproduced, true, 're-run reproduced the first result');
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.result', { experimentId: 'exp-1', results: { ...results, resultDigest: 'tampered' } }));
+  assert.equal(s.experiments['exp-1'].results[2].reproduced, false, 'a different digest is recorded as not reproduced');
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.result', { experimentId: 'exp-1', results: { ...results, baseDigest: 'other' } }));
+  assert.match(s.rejected.at(-1).why, /different starting point/);
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.conclude', { experimentId: 'exp-1', verdict: 'MAYBE', note: 'x' }));
+  assert.match(s.rejected.at(-1).why, /SUPPORTED, REFUTED or INCONCLUSIVE/);
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.conclude', { experimentId: 'exp-1', verdict: 'SUPPORTED', note: 'Thomas skipped the heating test in most dice sets.' }));
+  assert.equal(s.experiments['exp-1'].conclusions[0].verdict, 'SUPPORTED');
+  assert.equal(JSON.stringify(s.entities), ents, 'no entity changed');
+  assert.equal(s.scenario, null); assert.equal(s.worldEvents.length, 0); assert.equal(s.actions.length, 0); assert.equal(s.simruns.length, 0);
+  s = apply(s, makeEvent(s.seq + 1, 'experiment.register', { id: 'exp-2', def: expDef({ hypothesis: '' }), baseSeq: 6, baseDigest: 'x' }));
+  assert.match(s.rejected.at(-1).why, /experiment not valid/);
+  // Registering after the live scenario has run does not change the starting point.
+  const later = ohRun(8).log;
+  assert.equal(resolveBase(later, 'oldhouse').baseDigest, base.baseDigest);
+  assert.deepEqual(runExperiment(def, later).resultDigest, results.resultDigest);
+});
