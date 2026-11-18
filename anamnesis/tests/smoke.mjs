@@ -68,6 +68,26 @@ const anl = await page.locator('main').innerText();
 check('analyzer shows metrics', /WORDS/i.test(anl) && /Flesch/i.test(anl));
 if (shots) await page.screenshot({ path: `${shots}/ipad-analyzer.png` });
 
+// Draft protection: typed text survives an unrelated re-render, then saves cleanly.
+await page.goto(base + '#/characters/character-theo');
+await page.locator('input[name="role"]').fill('Engineer with a secret');
+await page.getByRole('button', { name: 'Decide ▸' }).click();
+const kept = await page.locator('input[name="role"]').inputValue();
+check('unsaved edit survives re-render', kept === 'Engineer with a secret', kept);
+check('unsaved-changes bar shown', await page.locator('.draft-bar').count() === 1);
+await page.getByRole('button', { name: 'Save character' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.entities.character['character-theo'].role === 'Engineer with a secret');
+check('save clears draft bar', await page.locator('.draft-bar').count() === 0);
+
+// Offline: service worker caches the shell; app reloads with network cut.
+await page.evaluate(() => navigator.serviceWorker.ready);
+await page.reload(); await page.waitForFunction(() => navigator.serviceWorker.controller);
+await context.setOffline(true);
+await page.reload();
+await page.waitForFunction(() => window.__anamnesis?.events);
+check('app shell loads offline (service worker)', (await page.locator('#nav a').count()) === 10);
+await context.setOffline(false);
+
 const before = await page.evaluate(() => window.__anamnesis.events.length);
 await page.reload();
 await page.waitForFunction(() => window.__anamnesis?.events);

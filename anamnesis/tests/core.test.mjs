@@ -151,3 +151,15 @@ test('terminal commands', () => {
   assert.match(runCommand('bogus', { state: s }).out[0], /unknown command/);
   assert.equal(runCommand('go sim', { state: s }).actions[0].route, 'simulator');
 });
+
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+test('service worker shell lists every shipped file', () => {
+  const root = new URL('..', import.meta.url).pathname;
+  const walk = d => readdirSync(join(root, d)).flatMap(f => { const p = join(d, f); return statSync(join(root, p)).isDirectory() ? walk(p) : [p]; });
+  const shipped = ['index.html', 'manifest.webmanifest', ...['css', 'js', 'icons'].flatMap(walk)].map(p => './' + p).sort();
+  const sw = readFileSync(join(root, 'sw.js'), 'utf8');
+  const listed = [...sw.matchAll(/'(\.\/[^']+)'/g)].map(m => m[1]).filter(p => p !== './').sort();
+  assert.deepEqual(listed, shipped);
+});

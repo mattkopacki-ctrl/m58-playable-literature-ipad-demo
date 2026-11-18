@@ -79,14 +79,64 @@ function render() {
   };
   const scrollY = window.scrollY;
   const main = $('main');
+  stashDrafts(main);
   let view;
   try { view = VIEWS[route](ctx); } catch (err) { view = h('div', { class: 'panel' }, h('h2', {}, 'View error'), h('pre', {}, String(err.stack || err))); console.error(err); }
   main.replaceChildren(view);
   main.dataset.route = route;
   $('title-route').textContent = MODULES.find(m => m[0] === route)?.[1] || '';
   $('evcount').textContent = `EV ${app.state.seq}`;
+  app.renderKey = `${route}/${params[0] || ''}`;
+  restoreDrafts(main);
   if (app.lastRoute === route) window.scrollTo(0, scrollY);
   app.lastRoute = route;
+}
+
+// ---- Draft protection: typed-but-unsaved form values survive re-renders and navigation.
+app.drafts = {};
+const formsIn = root => [...root.querySelectorAll('form.form')];
+function readForm(form) {
+  return [...form.querySelectorAll('[name]')].map(el => [el.name, el.type === 'checkbox' ? el.value : null, el.type === 'checkbox' ? el.checked : el.value]);
+}
+function stashDrafts(main) {
+  if (!app.renderKey) return;
+  formsIn(main).forEach((form, i) => {
+    const key = `${app.renderKey}#${i}`;
+    if (form.dataset.dirty === '1') app.drafts[key] = readForm(form); else delete app.drafts[key];
+  });
+}
+function restoreDrafts(main) {
+  let restored = 0;
+  formsIn(main).forEach((form, i) => {
+    const draft = app.drafts[`${app.renderKey}#${i}`];
+    if (!draft) return;
+    for (const [name, cbValue, v] of draft) {
+      const el = cbValue == null ? form.querySelector(`[name="${CSS.escape(name)}"]:not([type=checkbox])`)
+        : form.querySelector(`[name="${CSS.escape(name)}"][value="${CSS.escape(cbValue)}"]`);
+      if (!el) continue;
+      if (cbValue == null) { el.value = v; el.dispatchEvent(new Event('input')); } else el.checked = v;
+    }
+    markDirty(form); restored++;
+  });
+  if (restored) setStatus(`Unsaved draft restored in ${restored} form(s). Save to keep it, or Discard.`);
+}
+function markDirty(form) {
+  if (form.dataset.dirty === '1') return;
+  form.dataset.dirty = '1';
+  const bar = h('div', { class: 'draft-bar', role: 'status' }, 'UNSAVED CHANGES ',
+    btn('Discard', () => { form.dataset.dirty = '0'; delete app.drafts[`${app.renderKey}#${formsIn($('main')).indexOf(form)}`]; render(); }, 'small'));
+  form.prepend(bar);
+}
+function wireDraftTracking() {
+  const main = $('main');
+  const onEdit = e => { const f = e.target.closest?.('form.form'); if (f && e.isTrusted) markDirty(f); };
+  main.addEventListener('input', onEdit);
+  main.addEventListener('change', onEdit);
+  // Capture phase: a submitted form is clean before its own handler re-renders.
+  main.addEventListener('submit', e => { e.target.dataset.dirty = '0'; e.target.querySelector('.draft-bar')?.remove(); }, true);
+  window.addEventListener('beforeunload', e => {
+    if (formsIn(main).some(f => f.dataset.dirty === '1') || Object.keys(app.drafts).length) { e.preventDefault(); e.returnValue = ''; }
+  });
 }
 
 function firstRun() {
@@ -114,9 +164,14 @@ async function boot() {
   app.state = replay(app.events);
   await refreshStorage();
   window.addEventListener('hashchange', render);
+  wireDraftTracking();
   if (!app.events.length) firstRun(); else render();
   setStatus(app.log.kind === 'indexeddb' ? `Loaded ${app.events.length} events from IndexedDB.` : `WARNING: ${app.log.reason}. Changes will be lost on reload — export!`);
   window.__anamnesis = app; // inspection hook for tests and the curious
 }
 
 boot();
+
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !new URLSearchParams(location.search).has('nosw')) {
+  navigator.serviceWorker.register('./sw.js').catch(err => console.warn('Service worker not registered:', err.message));
+}
