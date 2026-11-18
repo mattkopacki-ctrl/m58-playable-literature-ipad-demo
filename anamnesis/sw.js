@@ -1,6 +1,6 @@
 // Offline app shell. Cache-first for same-origin GETs; the event log lives in
 // IndexedDB and is never touched here. Bump VERSION whenever any shell file changes.
-const VERSION = 'anamnesis-shell-4e5e412acda2';
+const VERSION = 'anamnesis-shell-06ff7d568bdf';
 const SHELL = [
     './',
     './css/anamnesis.css',
@@ -28,6 +28,7 @@ const SHELL = [
     './js/views/common.mjs',
     './js/views/entities.mjs',
     './js/views/intelligence.mjs',
+    './js/views/monitor.mjs',
     './js/views/plots.mjs',
     './js/views/simulator.mjs',
     './js/views/terminal.mjs',

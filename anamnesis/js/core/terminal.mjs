@@ -14,7 +14,7 @@ import { stepScenario, scenarioStatus, inspectCharacter, buildWorldEvent, clockO
 const ALIAS = { characters: 'character', chars: 'character', char: 'character', worlds: 'world', plots: 'plot', themes: 'theme',
   research: 'inbox', notes: 'intel', lib: 'library', books: 'library' };
 const kindOf = k => { const x = ALIAS[k?.toLowerCase()] || k?.toLowerCase(); return KINDS.includes(x) ? x : null; };
-const MODULES = ['library', 'inbox', 'analyzer', 'characters', 'worlds', 'plots', 'themes', 'simulator', 'intelligence', 'terminal'];
+const MODULES = ['library', 'inbox', 'analyzer', 'characters', 'worlds', 'plots', 'themes', 'simulator', 'intelligence', 'terminal', 'monitor'];
 
 export const HELP = [
   'help                         this list',
@@ -40,6 +40,8 @@ export const HELP = [
   'log [n]                      last n events (default 10)',
   'stats                        counts',
   'go <module>                  open a module',
+  'sys                          system summary (full detail: go monitor)',
+  'theme <navy|phosphor>        switch colour theme',
   'export                       download the full event log',
   'clear                        clear the screen',
 ];
@@ -225,6 +227,18 @@ export function runCommand(line, { state, events = [] }) {
       const m = MODULES.find(x => x.startsWith((args[0] || '').toLowerCase()));
       if (!m) { say(`modules: ${MODULES.join(' ')}`); break; }
       actions.push({ type: 'go', route: m }); say(`opening ${m}…`);
+      break;
+    }
+    case 'sys': {
+      const byType = {}; for (const ev of events) byType[ev.type] = (byType[ev.type] || 0) + 1;
+      say(`events ${events.length} · rejected ${state.rejected.length} · decisions ${state.decisions.length} · runs ${state.simruns.length} · world events ${state.worldEvents.length}`,
+        ...Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([t, n]) => `  ${t.padEnd(22)} ${n}`), '  background processes: none · network/AI calls: none');
+      break;
+    }
+    case 'theme': {
+      const t = (args[0] || '').toLowerCase();
+      if (!['navy', 'phosphor'].includes(t)) { say('usage: theme <navy|phosphor>'); break; }
+      actions.push({ type: 'theme', theme: t }); say(`theme: ${t}`);
       break;
     }
     case 'export': actions.push({ type: 'export' }); say('export requested.'); break;

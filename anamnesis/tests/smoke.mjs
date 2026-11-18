@@ -22,7 +22,7 @@ await page.waitForFunction(() => window.__anamnesis?.events.length >= 12);
 const seeded = await page.evaluate(() => window.__anamnesis.events.length);
 check('sample project loads', seeded === 12, `${seeded} events`);
 
-const modules = ['library', 'inbox', 'analyzer', 'characters', 'worlds', 'plots', 'themes', 'simulator', 'intelligence', 'terminal'];
+const modules = ['library', 'inbox', 'analyzer', 'characters', 'worlds', 'plots', 'themes', 'simulator', 'intelligence', 'terminal', 'monitor'];
 for (const m of modules) {
   await page.goto(base + '#/' + m);
   await page.waitForTimeout(150);
@@ -142,6 +142,29 @@ await page.locator('.prompt-in').press('Enter');
 await page.waitForTimeout(200);
 check('terminal inspect shows hearsay source', (await page.locator('.screen').innerText()).includes('told by Daniel Hale'));
 
+// System Monitor: integrity checks read-only and pass.
+await page.goto(base + '#/monitor');
+const evBefore = await page.evaluate(() => window.__anamnesis.events.length);
+await page.getByRole('button', { name: 'Verify stored log' }).click();
+await page.waitForSelector('#verify-log');
+check('System Monitor: stored log verifies against on-screen state', (await page.locator('#verify-log').innerText()).includes('LOG OK'), await page.locator('#verify-log').innerText());
+await page.getByRole('button', { name: 'Verify every decision by replay' }).click();
+await page.waitForSelector('#verify-dec');
+const decTxt = await page.locator('#verify-dec').innerText();
+check('System Monitor: every recorded decision recomputes identically', /DECISIONS OK/.test(decTxt) && /4[0-9] of 4[0-9]/.test(decTxt), decTxt);
+check('System Monitor checks write nothing to the log', evBefore === await page.evaluate(() => window.__anamnesis.events.length));
+if (shots) await page.screenshot({ path: `${shots}/ipad-monitor.png` });
+// Theme: navy by default, phosphor optional, choice survives reload.
+const bgOf = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+check('default theme is navy', (await page.evaluate(() => document.documentElement.dataset.theme)) === 'navy' && (await bgOf()) === 'rgb(13, 18, 32)', await bgOf());
+await page.locator('select[name="theme"]').selectOption('phosphor');
+check('green phosphor theme can be selected', (await bgOf()) === 'rgb(11, 15, 12)', await bgOf());
+if (shots) await page.screenshot({ path: `${shots}/ipad-monitor-phosphor.png` });
+await page.reload(); await page.waitForFunction(() => window.__anamnesis?.events);
+check('theme choice survives reload', (await page.evaluate(() => document.documentElement.dataset.theme)) === 'phosphor');
+await page.locator('select[name="theme"]').selectOption('navy');
+
+
 // Draft protection: typed text survives an unrelated re-render, then saves cleanly.
 await page.goto(base + '#/characters/character-theo');
 await page.locator('input[name="role"]').fill('Engineer with a secret');
@@ -159,7 +182,7 @@ await page.reload(); await page.waitForFunction(() => navigator.serviceWorker.co
 await context.setOffline(true);
 await page.reload();
 await page.waitForFunction(() => window.__anamnesis?.events);
-check('app shell loads offline (service worker)', (await page.locator('#nav a').count()) === 10);
+check('app shell loads offline (service worker)', (await page.locator('#nav a').count()) === 11);
 await context.setOffline(false);
 
 const before = await page.evaluate(() => window.__anamnesis.events.length);

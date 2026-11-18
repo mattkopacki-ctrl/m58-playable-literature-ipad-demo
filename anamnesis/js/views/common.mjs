@@ -8,7 +8,7 @@ export const MODULES = [
   ['library', 'Library', 'LIB'], ['inbox', 'Research Inbox', 'INB'], ['analyzer', 'Analyzer', 'ANL'],
   ['characters', 'Characters', 'CHR'], ['worlds', 'Worlds', 'WLD'], ['plots', 'Plots', 'PLT'],
   ['themes', 'Themes', 'THM'], ['simulator', 'Simulator', 'SIM'], ['intelligence', 'Intelligence', 'INT'],
-  ['terminal', 'Terminal', 'TRM'],
+  ['terminal', 'Terminal', 'TRM'], ['monitor', 'System Monitor', 'SYS'],
 ];
 
 export const ROUTE_KIND = { library: 'library', inbox: 'inbox', characters: 'character', worlds: 'world', plots: 'plot', themes: 'theme' };

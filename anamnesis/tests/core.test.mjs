@@ -476,3 +476,11 @@ test('T-021 eligibility changes nothing else; originals are preserved', () => {
   const t = runCommand('stage context TESTED', { state: replay(seeded()) });
   assert.equal(t.actions.length, 0); assert.match(t.out.join(' '), /cannot move OBSERVED → TESTED/);
 });
+
+test('T-022/T-020 terminal: sys summary, theme switch, monitor route', () => {
+  const s = replay(seeded());
+  assert.match(runCommand('sys', { state: s, events: seeded() }).out[0], /events 12 · rejected 0/);
+  assert.deepEqual(runCommand('theme phosphor', { state: s }).actions, [{ type: 'theme', theme: 'phosphor' }]);
+  assert.match(runCommand('theme pink', { state: s }).out[0], /usage/);
+  assert.equal(runCommand('go monitor', { state: s }).actions[0].route, 'monitor');
+});

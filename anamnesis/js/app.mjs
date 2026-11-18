@@ -10,9 +10,10 @@ import { analyzerView } from './views/analyzer.mjs';
 import { simulatorView } from './views/simulator.mjs';
 import { intelligenceView } from './views/intelligence.mjs';
 import { terminalView } from './views/terminal.mjs';
+import { monitorView } from './views/monitor.mjs';
 
 const VIEWS = { library: libraryView, inbox: inboxView, analyzer: analyzerView, characters: charactersView, worlds: worldsView,
-  plots: plotsView, themes: themesView, simulator: simulatorView, intelligence: intelligenceView, terminal: terminalView };
+  plots: plotsView, themes: themesView, simulator: simulatorView, intelligence: intelligenceView, terminal: terminalView, monitor: monitorView };
 
 const app = { log: null, events: [], state: replay([]), scratch: {}, storage: { label: 'starting…' }, queue: Promise.resolve() };
 const $ = id => document.getElementById(id);
@@ -33,6 +34,25 @@ function dispatch(type, payload, { silent = false } = {}) {
   return app.queue;
 }
 
+function lastExport() { try { return localStorage.getItem('anamnesis:lastExport'); } catch { return null; } }
+
+// Theme is a per-browser convenience. Navy is the owner-approved default; green phosphor stays available.
+const THEMES = [['navy', 'Navy workstation (default)'], ['phosphor', 'Green phosphor']];
+const theme = {
+  list: THEMES,
+  get() { try { const t = localStorage.getItem('anamnesis:theme'); return THEMES.some(x => x[0] === t) ? t : 'navy'; } catch { return 'navy'; } },
+  set(t) {
+    if (!THEMES.some(x => x[0] === t)) return false;
+    try { localStorage.setItem('anamnesis:theme', t); } catch { /* still applies for this page */ }
+    theme.apply(t); return true;
+  },
+  apply(t = theme.get()) {
+    document.documentElement.dataset.theme = t;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t === 'phosphor' ? '#0b0f0c' : '#0d1220');
+  },
+};
+theme.apply();
+
 function parseRoute() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [path, qs] = raw.split('?');
@@ -45,6 +65,7 @@ function go(route, id) { location.hash = `#/${route}${id ? '/' + id : ''}`; }
 function exportLog() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   download(`anamnesis-os-${stamp}.json`, JSON.stringify(buildExport(app.events), null, 2));
+  try { localStorage.setItem('anamnesis:lastExport', new Date().toISOString()); } catch { /* private mode */ }
   setStatus(`Export of ${app.events.length} events requested. Verify the file in Files before relying on it.`);
 }
 
@@ -64,7 +85,7 @@ async function importLog(file) {
 async function refreshStorage() {
   const s = await storageStatus();
   const mb = v => v == null ? '?' : (v / 1048576).toFixed(1) + ' MB';
-  app.storage = { ...s, label: `${app.log.kind === 'indexeddb' ? 'IndexedDB' : 'MEMORY ONLY (' + app.log.reason + ')'} · ${app.events.length} events · persisted: ${s.persisted == null ? 'unknown' : s.persisted ? 'yes' : 'no (best-effort)'} · used ${mb(s.usage)}` };
+  app.storage = { ...s, backend: app.log.kind, label: `${app.log.kind === 'indexeddb' ? 'IndexedDB' : 'MEMORY ONLY (' + app.log.reason + ')'} · ${app.events.length} events · persisted: ${s.persisted == null ? 'unknown' : s.persisted ? 'yes' : 'no (best-effort)'} · used ${mb(s.usage)}` };
   $('lamp').className = `lamp ${app.log.kind === 'indexeddb' ? (s.persisted ? 'ok' : 'warn') : 'bad'}`;
   $('lamp').title = app.storage.label;
 }
@@ -74,7 +95,7 @@ function render() {
   for (const a of document.querySelectorAll('#nav a')) a.setAttribute('aria-current', a.dataset.route === route ? 'page' : 'false');
   const ctx = {
     state: app.state, events: app.events, params, query, scratch: (app.scratch[route] ||= {}), storage: app.storage,
-    dispatch, go, status: setStatus, rerender: render, exportLog, getState: () => app.state,
+    dispatch, go, status: setStatus, rerender: render, exportLog, getState: () => app.state, readLog: () => app.log.all(), lastExport, theme,
     persist: async () => { const ok = await requestPersistence(); await refreshStorage(); setStatus(ok ? 'Persistent storage granted.' : 'Browser declined persistent storage. Add to Home Screen and export regularly.'); render(); },
   };
   const scrollY = window.scrollY;

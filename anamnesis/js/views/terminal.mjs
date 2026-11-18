@@ -16,6 +16,7 @@ export function terminalView(ctx) {
       if (a.type === 'clear') ctx.scratch.term = [];
       else if (a.type === 'dispatch') await ctx.dispatch(a.event, a.payload, { silent: true });
       else if (a.type === 'export') ctx.exportLog();
+      else if (a.type === 'theme') ctx.theme.set(a.theme);
       else if (a.type === 'go') { ctx.go(a.route); return; }
     }
     ctx.scratch.term = ctx.scratch.term.slice(-400);
