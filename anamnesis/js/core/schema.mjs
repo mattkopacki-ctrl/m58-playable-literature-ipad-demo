@@ -14,6 +14,7 @@ export const EVIDENCE_LABEL = {
 };
 export const INBOX_STATUS = ['NEW', 'TRIAGED', 'FILED', 'REJECTED'];
 export const VALUES = ['safety', 'truth', 'loyalty', 'ambition', 'freedom', 'compassion', 'control', 'belonging'];
+export const MEMORY_SOURCES = ['seen', 'told', 'retold'];
 export const TRAITS = ['openness', 'conscientiousness', 'extraversion', 'agreeableness', 'neuroticism'];
 
 const str = (v, max = 20000) => (typeof v === 'string' ? v : v == null ? '' : String(v)).slice(0, max);
@@ -50,6 +51,7 @@ const normalizers = {
       text: str(m.text, 1000), at: num(m.at, -100000, 100000, 0), tags: tagList(m.tags),
       valence: num(m.valence, -1, 1, 0), arousal: num(m.arousal, 0, 1, 0.3),
       rehearsals: list(m.rehearsals, t => num(t, -100000, 100000, 0), 500),
+      source: oneOf(m.source, MEMORY_SOURCES, 'seen'), from: str(m.from, 80), originId: str(m.originId, 80),
     }), 500),
   }),
   world: d => ({

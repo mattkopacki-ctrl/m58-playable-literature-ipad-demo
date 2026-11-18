@@ -30,7 +30,7 @@ export function intelligenceView(ctx) {
       btn('+ New note', async () => { await ctx.dispatch('entity.create', { kind: 'intel', id: uid('intel'), data: { title: 'New note' } }); }, 'small'),
       notes.map(n => noteForm(ctx, n))),
     panel('Event log (latest 25)', table(['#', 'When', 'Type', 'Subject'], ctx.events.slice(-25).reverse().map(ev => [ev.seq, fmtTime(ev.at), ev.type,
-      ev.payload.kind ? `${ev.payload.kind}:${ev.payload.id}` : ev.payload.characterName || ev.payload.decisionId || ev.payload.characterId || ev.payload.id || '']))),
+      ev.payload.kind ? `${ev.payload.kind}:${ev.payload.id}` : (ev.payload.speakerName ? `${ev.payload.speakerName} → ${ev.payload.listenerName}` : '') || ev.payload.characterName || ev.payload.decisionId || ev.payload.characterId || ev.payload.id || '']))),
     ctx.state.rejected.length ? panel('Rejected events', table(['#', 'Type', 'Why'], ctx.state.rejected.map(r => [r.seq, r.type, r.why]))) : null);
 }
 

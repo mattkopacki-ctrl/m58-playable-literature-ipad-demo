@@ -1,10 +1,11 @@
 // Inspectable character decisions. Every score is a sum of named terms, each with
 // its source and reason, so any choice can be explained and replayed exactly.
 // Status: SIMULATION TECHNIQUE (not a validated psychological model).
-import { hashNoise, digest } from './rng.mjs';
+import { hashNoise, hashUnit, digest } from './rng.mjs';
 import { VALUES } from './schema.mjs';
 
-export const ENGINE_VERSION = 'anamnesis-decide-1';
+export const ENGINE_VERSION = 'anamnesis-decide-2'; // v2: hearsay memories weigh less (seen 1, retold 0.8, told 0.6)
+export const SOURCE_WEIGHT = { seen: 1, retold: 0.8, told: 0.6 };
 export const ACTR_DECAY = 0.5;          // ACT-R default d (Anderson & Schooler 1991)
 export const RECALL_THRESHOLD = -0.5;   // tuned by feel; documented, not measured
 export const NOISE_SD = 0.15;
@@ -78,8 +79,9 @@ export function scoreOption(ch, situation, option, ctx) {
     const weight = Math.max(0, Math.min(1.5, act.total + 1)) / 1.5;
     const sharedWithOption = m.tags.filter(t => tags.includes(t));
     if (!sharedWithOption.length) continue;
-    terms.push(term('memory', m.text.slice(0, 60), m.valence * weight * 0.6,
-      `recalled (A=${act.total.toFixed(2)}, cues [${act.overlap.join(', ')}]), valence ${m.valence}`));
+    const sw = SOURCE_WEIGHT[m.source] ?? 1;
+    terms.push(term('memory', m.text.slice(0, 60), m.valence * weight * 0.6 * sw,
+      `recalled (A=${act.total.toFixed(2)}, cues [${act.overlap.join(', ')}]), valence ${m.valence}${sw !== 1 ? `, source ${m.source} ×${sw}` : ''}`));
   }
   const noise = hashNoise(NOISE_SD, ch.id, situation.id, option.id, ctx.seed);
   terms.push(term('noise', 'hashed noise', noise, `deterministic draw for (${ch.id}, ${situation.id}, ${option.id}, seed ${ctx.seed})`));
@@ -137,4 +139,94 @@ export function parseOptions(text) {
     const tags = m ? m[2].split(/[,\s]+/).map(t => t.trim().toLowerCase()).filter(Boolean) : [];
     return { id: 'opt-' + (i + 1), label, tags };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Beliefs and conversations. Status: SIMULATION TECHNIQUE. Parameters are tuned
+// by feel and documented here; none are measured.
+export const BELIEF_GAIN = 2;            // log-odds per unit of strength × credibility
+export const PERSEVERANCE = 0.5;         // how much entrenchment discounts contrary evidence
+export const MEMORY_CREDIBILITY = { seen: 0.9, retold: 0.7, told: 0.5 };
+
+const r3 = x => Math.round(x * 1000) / 1000;
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const logit = p => Math.log(p / (1 - p));
+const sameClaim = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+/**
+ * Update one character's confidence in a claim from one piece of evidence. Pure.
+ * evidence = { direction: +1 supports | -1 contradicts, strength 0..1, credibility 0..1, source: {type, ref, text} }
+ * Evidence against the way the character already leans is discounted by entrenchment
+ * (belief perseverance); evidence with it is taken at face value.
+ */
+export function updateBelief(ch, claim, evidence) {
+  const text = String(claim || '').trim();
+  if (!text) throw new Error('Belief update needs a claim');
+  const direction = evidence.direction < 0 ? -1 : 1;
+  const strength = clamp(Number(evidence.strength) || 0, 0, 1);
+  const credibility = clamp(Number(evidence.credibility) || 0, 0, 1);
+  const existing = ch.beliefs.find(b => sameClaim(b.claim, text));
+  const before = clamp(existing ? existing.confidence : 0.5, 0.02, 0.98);
+  const lean = Math.sign(before - 0.5);
+  const entrenchment = Math.abs(before - 0.5) * 2;
+  const against = lean !== 0 && lean !== direction;
+  const resist = against ? 1 - PERSEVERANCE * entrenchment : 1;
+  const delta = direction * strength * credibility * BELIEF_GAIN * resist;
+  const after = r3(clamp(1 / (1 + Math.exp(-(logit(before) + delta))), 0.02, 0.98));
+  return {
+    characterId: ch.id, characterName: ch.name, claim: existing ? existing.claim : text, isNew: !existing,
+    direction, strength, credibility, before: r3(before), after, source: evidence.source || { type: 'observation' },
+    terms: [
+      { label: 'prior confidence', value: r3(before), why: existing ? 'held belief' : 'no prior belief: starts at 0.5' },
+      { label: 'evidence', value: r3(direction * strength), why: `${direction > 0 ? 'supports' : 'contradicts'} at strength ${strength}` },
+      { label: 'credibility', value: r3(credibility), why: `source ${evidence.source?.type || 'observation'}` },
+      { label: 'perseverance', value: r3(resist), why: against ? `contrary to a belief held with entrenchment ${r3(entrenchment)}; discounted` : 'not contrary to current lean; no discount' },
+      { label: 'log-odds shift', value: r3(delta), why: `direction × strength × credibility × ${BELIEF_GAIN} × perseverance` },
+    ],
+    status: 'SIMULATION',
+  };
+}
+
+/**
+ * Which source does the holder attribute a memory to right now? Hearsay can come to
+ * feel like something seen (source misattribution). The draw is fixed per memory and
+ * the probability only rises, so once a memory flips it stays flipped.
+ */
+export function attributeSource(mem, now, ownerId) {
+  if (mem.source !== 'told') return { attributed: mem.source || 'seen', p: 0, misattributed: false };
+  const age = Math.max(0, now - mem.at);
+  const p = r3(Math.min(0.6, 0.05 + 0.004 * age + 0.05 * (mem.rehearsals?.length || 0)));
+  const misattributed = hashUnit(ownerId, mem.id, 'source') < p;
+  return { attributed: misattributed ? 'seen' : 'told', p, misattributed };
+}
+
+/** Credibility a character gives one of their own memories as evidence. */
+export function memoryCredibility(mem, now, ownerId) {
+  return MEMORY_CREDIBILITY[attributeSource(mem, now, ownerId).attributed] ?? 0.5;
+}
+
+/**
+ * One character tells another one memory. The listener receives only what was said
+ * (never the speaker's other memories or world truth) as a new trace with source "told".
+ */
+export function buildConversation(speaker, listener, memoryId, { now = 0, cues = [], asTold = '', claim = '', direction = 1, strength = 0.5 } = {}) {
+  if (!speaker || !listener) throw new Error('Conversation needs a speaker and a listener');
+  if (speaker.id === listener.id) throw new Error('A character cannot tell themselves');
+  const mem = speaker.memories.find(m => m.id === memoryId);
+  if (!mem) throw new Error('Speaker does not hold that memory');
+  if (mem.at > now) throw new Error('That memory has not happened yet at this story hour');
+  const act = memoryActivation(mem, now, cues);
+  if (!act.retrievable) throw new Error(`${speaker.name} cannot recall that right now (A=${act.total.toFixed(2)}, threshold ${RECALL_THRESHOLD})`);
+  const toldText = String(asTold || '').trim() || mem.text;
+  const slanted = toldText !== mem.text;
+  const key = digest({ s: speaker.id, l: listener.id, m: mem.id, now });
+  const listenerMemory = { id: `mem-told-${key}`, text: toldText, at: now, tags: mem.tags, valence: r3(mem.valence * 0.8), arousal: r3(mem.arousal * 0.6),
+    rehearsals: [], source: 'told', from: speaker.id, originId: mem.id };
+  const speakerRecollection = slanted ? { id: `mem-retold-${key}`, text: toldText, at: now, tags: mem.tags, valence: mem.valence, arousal: r3(mem.arousal * 0.8),
+    rehearsals: [], source: 'retold', from: speaker.id, originId: mem.id } : null;
+  const trust = r3(0.3 + 0.4 * listener.traits.agreeableness);
+  const beliefUpdate = String(claim).trim()
+    ? updateBelief(listener, claim, { direction, strength, credibility: trust, source: { type: 'conversation', ref: speaker.id, text: `told by ${speaker.name}` } }) : null;
+  return { speakerId: speaker.id, speakerName: speaker.name, listenerId: listener.id, listenerName: listener.name, memoryId: mem.id,
+    storyTime: now, toldText, slanted, activation: r3(act.total), trust, listenerMemory, speakerRecollection, beliefUpdate, status: 'SIMULATION' };
 }

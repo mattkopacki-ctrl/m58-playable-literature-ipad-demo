@@ -2,7 +2,7 @@
 // the UI performs the actions (dispatch, navigation, export).
 import { liveList } from './store.mjs';
 import { KINDS, INBOX_STATUS, displayName } from './schema.mjs';
-import { decide, explain } from './cognition.mjs';
+import { decide, explain, updateBelief, buildConversation, memoryActivation } from './cognition.mjs';
 import { analyzeText } from './analyzer.mjs';
 import { computeIntel } from './intel.mjs';
 import { SITUATIONS } from './seed.mjs';
@@ -20,6 +20,10 @@ export const HELP = [
   'new <kind> <name…>           create an entity',
   'situations                   list preset situations',
   'decide <character> [n] [hour] [seed] [--record]   inspectable decision',
+  'memories <character> [hour]  list memories with numbers and activation',
+  'tell <speaker> <listener> <memory#> [hour] [cue,cue]   speaker tells listener a memory',
+  'beliefs <character>          list beliefs',
+  'believe <character> <+|-strength> <claim…>   apply evidence, e.g. believe theo -0.6 "claim"',
   'analyze <library title>      text metrics',
   'triage <inbox title> <NEW|TRIAGED|FILED|REJECTED>',
   'intel                        health checks',
@@ -85,6 +89,39 @@ export function runCommand(line, { state, events = [] }) {
       for (const r of rec.ranking) say(`  ${r.optionId === rec.chosenOptionId ? '*' : ' '} ${r.label.padEnd(30)} total ${String(r.total).padStart(7)}  p ${r.probability}`);
       say(`  digest ${rec.outputDigest}`);
       if (record) { actions.push({ type: 'dispatch', event: 'decision.record', payload: { id: uid('dec'), ...rec } }); say('  recorded.'); }
+      break;
+    }
+    case 'memories': {
+      const ch = findEntity(state, 'character', args[0]);
+      if (!ch) { say('usage: memories <character> [hour]'); break; }
+      const now = Number(args[1] ?? 48) || 0;
+      say(...ch.memories.map((m, i) => { const a = memoryActivation(m, now, m.tags); return `  ${i + 1}. [${m.source || 'seen'}] h${m.at} A(all cues)=${Number.isFinite(a.total) ? a.total.toFixed(2) : '—'}  ${m.text}`; }));
+      if (!ch.memories.length) say('  none');
+      break;
+    }
+    case 'tell': {
+      const sp = findEntity(state, 'character', args[0]), li = findEntity(state, 'character', args[1]);
+      const mem = sp?.memories[(Number(args[2]) || 0) - 1];
+      if (!sp || !li || !mem) { say('usage: tell <speaker> <listener> <memory#> [hour] [cue,cue]'); break; }
+      try {
+        const c = buildConversation(sp, li, mem.id, { now: Number(args[3] ?? 48) || 0, cues: args[4] ? args[4].split(',') : mem.tags });
+        actions.push({ type: 'dispatch', event: 'conversation.record', payload: c });
+        say(`${sp.name} → ${li.name}: "${c.toldText}" (A=${c.activation}); stored as hearsay.`);
+      } catch (err) { say('cannot tell: ' + err.message); }
+      break;
+    }
+    case 'beliefs': {
+      const ch = findEntity(state, 'character', args[0]);
+      if (!ch) { say('usage: beliefs <character>'); break; }
+      say(...ch.beliefs.map(b => `  ${String(b.confidence).padEnd(6)} ${b.claim}`)); if (!ch.beliefs.length) say('  none');
+      break;
+    }
+    case 'believe': {
+      const ch = findEntity(state, 'character', args[0]); const v = Number(args[1]); const claim = args.slice(2).join(' ');
+      if (!ch || !Number.isFinite(v) || v === 0 || !claim) { say('usage: believe <character> <+|-strength> <claim…>'); break; }
+      const u = updateBelief(ch, claim, { direction: Math.sign(v), strength: Math.abs(v), credibility: 0.7, source: { type: 'observation', text: 'terminal' } });
+      actions.push({ type: 'dispatch', event: 'belief.update', payload: u });
+      say(`${ch.name}: "${u.claim}" ${u.before} → ${u.after}  (perseverance ×${u.terms[3].value}, credibility 0.7)`);
       break;
     }
     case 'analyze': {

@@ -163,3 +163,99 @@ test('service worker shell lists every shipped file', () => {
   const listed = [...sw.matchAll(/'(\.\/[^']+)'/g)].map(m => m[1]).filter(p => p !== './').sort();
   assert.deepEqual(listed, shipped);
 });
+
+import { updateBelief, buildConversation, attributeSource, memoryCredibility } from '../js/core/cognition.mjs';
+
+test('belief update: direction, perseverance asymmetry, new claims, bounds', () => {
+  const s = replay(seeded());
+  const theo = s.entities.character['character-theo']; // "mechanical explanation" held at 0.9
+  const claim = 'Everything here has a mechanical explanation';
+  const ev = { strength: 0.6, credibility: 0.8 };
+  const up = updateBelief(theo, claim, { ...ev, direction: 1 });
+  const down = updateBelief(theo, claim, { ...ev, direction: -1 });
+  assert.ok(up.after > up.before && down.after < down.before);
+  const shift = t => Math.abs(t.terms.find(x => x.label === 'log-odds shift').value);
+  assert.ok(shift(down) < shift(up), 'contrary evidence is discounted by entrenchment');
+  assert.equal(down.terms.find(x => x.label === 'perseverance').value, 0.6);
+  const fresh = updateBelief(theo, 'Daniel was on the landing', { direction: 1, strength: 0.5, credibility: 0.5 });
+  assert.equal(fresh.before, 0.5); assert.equal(fresh.isNew, true);
+  assert.equal(updateBelief(theo, claim, { direction: 1, strength: 1, credibility: 0 }).after, 0.9, 'zero credibility changes nothing');
+  let c = theo; for (let i = 0; i < 20; i++) { const u = updateBelief(c, claim, { direction: 1, strength: 1, credibility: 1 }); c = { ...c, beliefs: [{ claim, confidence: u.after }] }; }
+  assert.ok(c.beliefs[0].confidence <= 0.98);
+  assert.deepEqual(updateBelief(theo, claim, { ...ev, direction: -1 }), down, 'deterministic');
+  assert.throws(() => updateBelief(theo, '  ', ev), /claim/);
+});
+
+test('belief.update event changes the holder only and is logged', () => {
+  let s = replay(seeded());
+  const bu = updateBelief(s.entities.character['character-theo'], 'The house is wrong', { direction: 1, strength: 0.7, credibility: 0.9 });
+  s = apply(s, makeEvent(s.seq + 1, 'belief.update', bu));
+  assert.equal(s.entities.character['character-theo'].beliefs.find(b => b.claim === 'The house is wrong').confidence, bu.after);
+  assert.equal(s.entities.character['character-ines'].beliefs[0].confidence, 0.8, 'other holders of the same claim are untouched');
+  assert.equal(s.beliefUpdates.length, 1);
+  assert.equal(s.rejected.length, 0);
+});
+
+test('conversation: listener gets only what was told; speaker rehearses; privacy holds', () => {
+  let s = replay(seeded());
+  const ines = s.entities.character['character-ines'], theo = s.entities.character['character-theo'];
+  assert.throws(() => buildConversation(ines, theo, 'mem-ines-1', { now: 60, cues: ['cellar'] }), /cannot recall/, 'one cue is not enough to reach the old memory');
+  const conv = buildConversation(ines, theo, 'mem-ines-1', { now: 60, cues: ['cellar', 'dark', 'locked'], asTold: 'Something came up from the cellar for me',
+    claim: 'The house is wrong', direction: 1, strength: 0.8 });
+  assert.equal(conv.slanted, true);
+  s = apply(s, makeEvent(s.seq + 1, 'conversation.record', conv));
+  assert.equal(s.rejected.length, 0);
+  const theo2 = s.entities.character['character-theo'], ines2 = s.entities.character['character-ines'];
+  const told = theo2.memories.filter(m => m.source === 'told');
+  assert.equal(told.length, 1);
+  assert.equal(told[0].text, 'Something came up from the cellar for me');
+  assert.equal(told[0].from, 'character-ines');
+  assert.ok(!theo2.memories.some(m => m.text.includes('records basement')), 'the untold original never reaches the listener');
+  assert.equal(ines2.memories.find(m => m.id === 'mem-ines-1').rehearsals.at(-1), 60);
+  assert.ok(ines2.memories.some(m => m.source === 'retold'), 'slanted retelling leaves a recollection trace on the speaker');
+  assert.ok(theo2.beliefs.find(b => b.claim === 'The house is wrong').confidence > 0.5);
+  assert.equal(s.conversations.length, 1); assert.equal(s.beliefUpdates.length, 1);
+  const again = apply(s, makeEvent(s.seq + 1, 'conversation.record', conv));
+  assert.match(again.rejected.at(-1).why, /already told/);
+  assert.deepEqual(replay([...seeded(), makeEvent(13, 'conversation.record', conv, '2026-11-18T00:00:00.000Z')]).entities.character['character-theo'].memories, theo2.memories);
+});
+
+test('conversation feasibility: cannot tell the unrecallable, the future, or oneself', () => {
+  const s = replay(seeded());
+  const ines = s.entities.character['character-ines'], theo = s.entities.character['character-theo'];
+  const faint = { ...theo, memories: [{ ...theo.memories[0], id: 'old', at: -90000, rehearsals: [], arousal: 0, tags: [] }] };
+  assert.throws(() => buildConversation(faint, ines, 'old', { now: 60 }), /cannot recall/);
+  assert.throws(() => buildConversation(ines, ines, 'mem-ines-1', { now: 60 }), /themselves/);
+  assert.throws(() => buildConversation(ines, theo, 'mem-ines-1', { now: -30000 }), /not happened/);
+  assert.throws(() => buildConversation(ines, theo, 'nope', { now: 60 }), /does not hold/);
+});
+
+test('hearsay weighs less in decisions and can come to feel seen', () => {
+  const s = replay(seeded());
+  const theo = s.entities.character['character-theo'];
+  const mem = src => ({ id: 'm-x', text: 'The cellar took someone', at: 40, tags: ['cellar'], valence: -1, arousal: 0.8, rehearsals: [], source: src, from: 'character-ines', originId: '' });
+  const term = src => decide({ ...theo, memories: [mem(src)] }, SITUATIONS[0], { now: 48, seed: 0 }).ranking.find(r => r.optionId === 'opt-1').terms.find(t => t.source === 'memory');
+  assert.ok(Math.abs(term('told').value) < Math.abs(term('seen').value));
+  assert.match(term('told').why, /source told ×0.6/);
+  const m = mem('told');
+  assert.ok(attributeSource(m, 40 + 24 * 6, 'c').p > attributeSource(m, 41, 'c').p, 'misattribution probability grows with age');
+  assert.equal(attributeSource(mem('seen'), 500, 'c').misattributed, false);
+  const flips = Array.from({ length: 200 }, (_, i) => attributeSource({ ...m, id: 'm' + i }, 40 + 24 * 7, 'c')).filter(a => a.misattributed).length;
+  assert.ok(flips > 20 && flips < 180, `some but not all hearsay flips (${flips}/200)`);
+  const flipped = Array.from({ length: 200 }, (_, i) => ({ ...m, id: 'm' + i })).find(x => attributeSource(x, 208, 'c').misattributed);
+  assert.equal(memoryCredibility(flipped, 208, 'c'), 0.9, 'misattributed hearsay is trusted like an eyewitness memory');
+  assert.equal(attributeSource(flipped, 5000, 'c').misattributed, true, 'once flipped, stays flipped');
+});
+
+test('terminal: tell and believe produce the same events as the GUI', () => {
+  const s = replay(seeded());
+  const t = runCommand('tell ines theo 2 48', { state: s });
+  assert.equal(t.actions[0].event, 'conversation.record');
+  assert.equal(t.actions[0].payload.listenerMemory.source, 'told');
+  assert.match(runCommand('tell ines theo 9', { state: s }).out[0], /usage/);
+  const b = runCommand('believe theo -0.6 "Everything here has a mechanical explanation"', { state: s });
+  assert.equal(b.actions[0].event, 'belief.update');
+  assert.ok(b.actions[0].payload.after < 0.9);
+  assert.match(runCommand('beliefs ines', { state: s }).out[0], /The house is wrong/);
+  assert.match(runCommand('memories ines', { state: s }).out[1], /cellar door/);
+});

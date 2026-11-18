@@ -73,6 +73,33 @@ check('character shows linked research backlink', (await page.locator('.research
 await page.goto(base + '#/themes/theme-unreliable');
 check('theme shows linked research backlink', (await page.locator('.research-links').innerText()).includes('Established'));
 
+// Conversation: Ines tells Theo; Theo holds it as hearsay and his belief moves.
+await page.goto(base + '#/characters/character-ines');
+await page.locator('select[name="listener"]').selectOption('character-theo');
+await page.locator('select[name="memory"]').selectOption('mem-ines-2');
+await page.locator('textarea[name="asTold"]').fill('Something came up from the cellar for me');
+await page.locator('form:has(select[name="listener"]) input[name="claim"]').fill('The house is wrong');
+await page.getByRole('button', { name: 'Tell ▸' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.conversations.length === 1);
+const theoMem = await page.evaluate(() => window.__anamnesis.state.entities.character['character-theo'].memories.filter(m => m.source === 'told').map(m => m.text));
+check('conversation gives listener a "told" memory with the slanted words', theoMem.length === 1 && theoMem[0] === 'Something came up from the cellar for me', JSON.stringify(theoMem));
+check('listener never receives the untold memory', await page.evaluate(() => !window.__anamnesis.state.entities.character['character-theo'].memories.some(m => m.text.includes('records basement'))));
+await page.goto(base + '#/characters/character-theo');
+check('listener memory table shows "told by Ines"', (await page.locator('main').innerText()).includes('told by Ines Varga'));
+// Belief update from evidence, with perseverance shown.
+await page.locator('form:has(select[name="source"]) input[name="claim"]').fill('Everything here has a mechanical explanation');
+await page.locator('form:has(select[name="source"]) select[name="direction"]').selectOption('-1');
+await page.getByRole('button', { name: 'Apply evidence' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.beliefUpdates.length === 2);
+const bel = await page.evaluate(() => window.__anamnesis.state.beliefUpdates.at(-1));
+check('belief update lowers confidence and logs perseverance', bel.after < bel.before && bel.terms.some(t => t.label === 'perseverance' && t.value < 1), `${bel.before} → ${bel.after}`);
+if (shots) await page.screenshot({ path: `${shots}/ipad-beliefs-conversations.png`, fullPage: true });
+await page.goto(base + '#/terminal');
+await page.locator('.prompt-in').fill('tell theo ines 1 48');
+await page.locator('.prompt-in').press('Enter');
+await page.waitForTimeout(300);
+check('terminal refuses an unrecallable memory (feasibility)', (await page.locator('.screen').innerText()).includes('cannot tell'));
+
 // Draft protection: typed text survives an unrelated re-render, then saves cleanly.
 await page.goto(base + '#/characters/character-theo');
 await page.locator('input[name="role"]').fill('Engineer with a secret');

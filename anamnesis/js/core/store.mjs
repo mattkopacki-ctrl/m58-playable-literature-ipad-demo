@@ -3,7 +3,7 @@
 import { KINDS, normalize } from './schema.mjs';
 
 export const EVENT_TYPES = ['entity.create', 'entity.update', 'entity.archive', 'entity.restore',
-  'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note'];
+  'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note', 'belief.update', 'conversation.record'];
 
 export function emptyState() {
   return {
@@ -12,6 +12,8 @@ export function emptyState() {
     decisions: [],
     simruns: [],
     recalls: [],
+    beliefUpdates: [],
+    conversations: [],
     notes: [],
     rejected: [],
   };
@@ -70,6 +72,28 @@ export function apply(state, ev) {
         return { ...s, recalls: [...state.recalls, { ...p, seq: ev.seq, at: ev.at }],
           entities: { ...state.entities, character: { ...state.entities.character, [ch.id]: ent } } };
       }
+      case 'belief.update': {
+        const ch = state.entities.character[p.characterId];
+        if (!ch) return reject('belief update for missing character');
+        const ent = bump(withBelief(ch, p), ev);
+        return { ...s, beliefUpdates: [...state.beliefUpdates, { ...p, seq: ev.seq, at: ev.at }], entities: putChar(state, ent) };
+      }
+      case 'conversation.record': {
+        const sp = state.entities.character[p.speakerId], li = state.entities.character[p.listenerId];
+        if (!sp || !li || sp.id === li.id) return reject('conversation needs two existing characters');
+        if (!sp.memories.some(m => m.id === p.memoryId)) return reject('speaker does not hold that memory');
+        if (li.memories.some(m => m.id === p.listenerMemory?.id)) return reject('already told at this story hour');
+        // Retelling rehearses the speaker's trace; a slanted retelling also leaves a recollection trace.
+        let spMem = sp.memories.map(m => m.id === p.memoryId ? { ...m, rehearsals: [...m.rehearsals, p.storyTime] } : m);
+        if (p.speakerRecollection && !spMem.some(m => m.id === p.speakerRecollection.id)) spMem = [...spMem, p.speakerRecollection];
+        const sp2 = bump({ ...sp, ...normalize('character', { ...sp, memories: spMem }) }, ev);
+        let li2 = { ...li, ...normalize('character', { ...li, memories: [...li.memories, p.listenerMemory] }) };
+        let beliefUpdates = state.beliefUpdates;
+        if (p.beliefUpdate) { li2 = withBelief(li2, p.beliefUpdate); beliefUpdates = [...beliefUpdates, { ...p.beliefUpdate, seq: ev.seq, at: ev.at }]; }
+        li2 = bump(li2, ev);
+        return { ...s, beliefUpdates, conversations: [...state.conversations, { ...p, seq: ev.seq, at: ev.at }],
+          entities: { ...state.entities, character: { ...state.entities.character, [sp2.id]: sp2, [li2.id]: li2 } } };
+      }
       case 'system.note':
         return { ...s, notes: [...state.notes, { text: String(p.text || ''), seq: ev.seq, at: ev.at }] };
       default:
@@ -78,6 +102,17 @@ export function apply(state, ev) {
   } catch (err) {
     return reject(err.message);
   }
+}
+
+const bump = (ent, ev) => ({ ...ent, updatedAt: ev.at, rev: ent.rev + 1 });
+const putChar = (state, ent) => ({ ...state.entities, character: { ...state.entities.character, [ent.id]: ent } });
+const claimKey = c => String(c || '').trim().toLowerCase();
+function withBelief(ch, bu) {
+  if (!claimKey(bu.claim) || !Number.isFinite(bu.after)) throw new Error('belief update needs a claim and a result');
+  const hit = ch.beliefs.some(b => claimKey(b.claim) === claimKey(bu.claim));
+  const beliefs = hit ? ch.beliefs.map(b => claimKey(b.claim) === claimKey(bu.claim) ? { ...b, confidence: bu.after } : b)
+    : [...ch.beliefs, { claim: String(bu.claim).trim(), confidence: bu.after }];
+  return { ...ch, ...normalize('character', { ...ch, beliefs }) };
 }
 
 export function replay(events) {

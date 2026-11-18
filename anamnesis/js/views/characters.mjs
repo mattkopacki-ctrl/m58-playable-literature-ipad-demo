@@ -2,7 +2,7 @@ import { h, field, input, textarea, select, slider, btn, badge, formData, panel,
 import { workbench, saveEntity, editorHeader, researchPanel } from './common.mjs';
 import { TRAITS, VALUES } from '../core/schema.mjs';
 import { liveList } from '../core/store.mjs';
-import { decide, verifyDecision, explain, parseOptions, memoryActivation } from '../core/cognition.mjs';
+import { decide, verifyDecision, explain, parseOptions, memoryActivation, updateBelief, buildConversation, attributeSource, memoryCredibility } from '../core/cognition.mjs';
 import { SITUATIONS } from '../core/seed.mjs';
 import { uid } from '../core/rng.mjs';
 
@@ -10,7 +10,7 @@ export function charactersView(ctx) {
   return workbench(ctx, {
     kind: 'character', route: 'characters', title: 'Characters', sub: e => e.role || '—',
     newData: () => ({ name: 'New character' }),
-    editor: ent => h('div', {}, editorHeader(ctx, 'character', ent), characterForm(ctx, ent), researchPanel(ctx, 'character', ent.id), memoryPanel(ctx, ent), decisionLab(ctx, ent), decisionHistory(ctx, ent)),
+    editor: ent => h('div', {}, editorHeader(ctx, 'character', ent), characterForm(ctx, ent), researchPanel(ctx, 'character', ent.id), memoryPanel(ctx, ent), beliefPanel(ctx, ent), conversationPanel(ctx, ent), decisionLab(ctx, ent), decisionHistory(ctx, ent)),
   });
 }
 
@@ -45,7 +45,7 @@ function memoryPanel(ctx, ent) {
   const cues = (ctx.scratch.cues ?? 'cellar dark').split(/[,\s]+/).filter(Boolean);
   const rows = ent.memories.map(m => {
     const a = memoryActivation(m, now, cues);
-    return [m.text, String(m.at), m.tags.join(' '), String(m.valence), Number.isFinite(a.total) ? a.total.toFixed(2) : '—',
+    return [m.text, sourceCell(ctx, ent, m, now), String(m.at), m.tags.join(' '), String(m.valence), Number.isFinite(a.total) ? a.total.toFixed(2) : '—',
       a.retrievable ? badge('REACHABLE', 'ok') : badge('BELOW THRESHOLD', 'dim'),
       btn('Recall', () => ctx.dispatch('memory.recall', { characterId: ent.id, memoryId: m.id, storyTime: now, cues }).then(() => ctx.status('Recall logged as a rehearsal.')), 'small', { disabled: m.at > now ? 'disabled' : null })];
   });
@@ -63,7 +63,7 @@ function memoryPanel(ctx, ent) {
     field('Current cues', input('cues', cues.join(' '), { onchange: e => { ctx.scratch.cues = e.target.value; ctx.rerender(); } })));
   return panel('Memory traces · ACT-R activation (simulation technique)',
     h('p', { class: 'dim' }, 'A = ln Σ t^−0.5 over encoding + rehearsals, plus 0.5 per matching cue and 0.3×arousal. Threshold −0.5. Recall writes a rehearsal event; nothing is edited in place.'),
-    ctl, rows.length ? table(['Memory', 'Hour', 'Tags', 'Val', 'A', 'State', ''], rows) : h('p', { class: 'dim' }, 'No memories.'), addForm);
+    ctl, rows.length ? table(['Memory', 'Source', 'Hour', 'Tags', 'Val', 'A', 'State', ''], rows) : h('p', { class: 'dim' }, 'No memories.'), addForm);
 }
 
 function situationFromScratch(ctx) {
@@ -127,4 +127,90 @@ function decisionHistory(ctx, ent) {
       btn('Verify by replay', async () => { const v = verifyDecision(r); await ctx.dispatch('decision.verify', { decisionId: r.id, ...v }); ctx.status(v.detail); }, 'small'),
       decisionView(r));
   })) : h('p', { class: 'dim' }, 'None yet.'));
+}
+
+const cuesOf = ctx => (ctx.scratch.cues ?? 'cellar dark').split(/[,\s]+/).filter(Boolean);
+const nowOf = ctx => Number(ctx.scratch.storyTime ?? 48);
+
+function sourceCell(ctx, ent, m, now) {
+  if (m.source === 'seen' || !m.source) return 'seen';
+  const who = ctx.state.entities.character[m.from]?.name || 'someone';
+  if (m.source === 'retold') return h('span', {}, 'own retelling');
+  const a = attributeSource(m, now, ent.id);
+  return h('span', {}, `told by ${who} `, a.misattributed ? badge('FEELS SEEN', 'warn') : badge(`p(confuse) ${a.p}`, 'dim'));
+}
+
+function beliefTrace(u) {
+  return h('div', { class: 'decision' },
+    h('p', {}, `${u.characterName}: “${u.claim}” ${u.before} → `, h('strong', { class: u.after >= u.before ? 'pos' : 'neg' }, String(u.after))),
+    table(['Term', 'Value', 'Why'], u.terms.map(t => [t.label, String(t.value), t.why])),
+    h('p', { class: 'mono dim' }, `source ${u.source?.type || 'observation'}${u.source?.text ? ' · ' + u.source.text : ''} · status SIMULATION TECHNIQUE`));
+}
+
+function beliefPanel(ctx, ent) {
+  const now = nowOf(ctx);
+  const history = ctx.state.beliefUpdates.filter(u => u.characterId === ent.id);
+  const rows = ent.beliefs.map(b => [b.claim, String(b.confidence), String(history.filter(u => u.claim.toLowerCase() === b.claim.toLowerCase()).length)]);
+  const sources = [['observation', 'New observation (describe below)'], ...ent.memories.filter(m => m.at <= now).map(m => {
+    const a = attributeSource(m, now, ent.id);
+    return [`memory:${m.id}`, `Own memory (${a.attributed}, credibility ${memoryCredibility(m, now, ent.id)}): ${m.text.slice(0, 50)}`];
+  })];
+  const form = h('form', { class: 'form', onsubmit: async e => {
+    e.preventDefault();
+    const d = formData(form);
+    try {
+      let credibility = Number(d.credibility), source = { type: 'observation', text: d.note };
+      if (d.source.startsWith('memory:')) {
+        const m = ent.memories.find(x => x.id === d.source.slice(7));
+        credibility = memoryCredibility(m, now, ent.id);
+        source = { type: 'memory', ref: m.id, text: m.text.slice(0, 80) };
+      }
+      const u = updateBelief(ent, d.claim, { direction: Number(d.direction), strength: Number(d.strength), credibility, source });
+      await ctx.dispatch('belief.update', { ...u, storyTime: now });
+      ctx.status(`Belief updated: ${u.before} → ${u.after}.`);
+    } catch (err) { ctx.status('Belief update failed: ' + err.message); }
+  } },
+  field('Claim', input('claim', ent.beliefs[0]?.claim || ''), 'Type an existing claim exactly to update it, or a new claim (starts at 0.5).'),
+  h('div', { class: 'grid2' },
+    field('Evidence', select('direction', '1', [['1', 'Supports the claim'], ['-1', 'Contradicts the claim']])),
+    field('Strength 0…1', input('strength', '0.6', { inputmode: 'decimal' }))),
+  field('Source', select('source', 'observation', sources)),
+  h('div', { class: 'grid2' }, field('Observation note', input('note', '')), field('Credibility 0…1 (observation only)', input('credibility', '0.7', { inputmode: 'decimal' }))),
+  h('div', { class: 'row' }, h('button', { type: 'submit', class: 'btn primary' }, 'Apply evidence')));
+  return panel(`Beliefs · updating from evidence (${history.length} updates)`,
+    h('p', { class: 'dim' }, 'Log-odds update: direction × strength × credibility × 2. Evidence against an entrenched belief is discounted (belief perseverance). Only this character changes; other holders of the same claim do not.'),
+    rows.length ? table(['Claim', 'Confidence', 'Updates'], rows) : h('p', { class: 'dim' }, 'No beliefs.'),
+    form,
+    history.length ? h('details', { class: 'option' }, h('summary', {}, `Update history (${history.length})`), history.slice().reverse().map(beliefTrace)) : null);
+}
+
+function conversationPanel(ctx, ent) {
+  const now = nowOf(ctx), cues = cuesOf(ctx);
+  const others = liveList(ctx.state, 'character').filter(c => c.id !== ent.id);
+  const tellable = ent.memories.filter(m => m.at <= now).map(m => {
+    const a = memoryActivation(m, now, cues);
+    return [m.id, `${a.retrievable ? '' : '[cannot recall now] '}${m.text.slice(0, 70)}`];
+  });
+  const convs = ctx.state.conversations.filter(c => c.speakerId === ent.id || c.listenerId === ent.id).slice().reverse();
+  if (!others.length || !tellable.length) return panel('Conversations', h('p', { class: 'dim' }, 'Needs another character and at least one memory.'));
+  const form = h('form', { class: 'form', onsubmit: async e => {
+    e.preventDefault();
+    const d = formData(form);
+    try {
+      const listener = ctx.state.entities.character[d.listener];
+      const c = buildConversation(ent, listener, d.memory, { now, cues, asTold: d.asTold, claim: d.claim, direction: Number(d.direction), strength: Number(d.strength) });
+      await ctx.dispatch('conversation.record', c);
+      ctx.status(`${ent.name} told ${listener.name}. ${listener.name} now holds it as hearsay.`);
+    } catch (err) { ctx.status('Cannot tell: ' + err.message); }
+  } },
+  h('div', { class: 'grid2' }, field('Tell', select('listener', others[0].id, others.map(c => [c.id, c.name]))), field('Which memory', select('memory', tellable[0][0], tellable))),
+  field('As told (optional slant)', textarea('asTold', '', 2), 'Leave empty to tell it as remembered. A different wording is what the listener receives, and leaves a retelling trace on the speaker.'),
+  h('div', { class: 'grid2' }, field('Asserts claim (optional)', input('claim', '')),
+    h('div', { class: 'grid2' }, field('Stance', select('direction', '1', [['1', 'Asserts it'], ['-1', 'Denies it']])), field('Force 0…1', input('strength', '0.6', { inputmode: 'decimal' })))),
+  h('div', { class: 'row' }, h('button', { type: 'submit', class: 'btn primary' }, 'Tell ▸')));
+  return panel(`Conversations (${convs.length})`,
+    h('p', { class: 'dim' }, `Story hour ${now}, cues [${cues.join(', ')}] (set in Memory traces). A character can only tell what they can recall now. The listener receives only the words said, stored as “told”; listener trust = 0.3 + 0.4 × agreeableness.`),
+    form,
+    convs.length ? table(['#', 'Hour', 'Speaker → Listener', 'Told', 'Slant', 'Belief effect'], convs.map(c => [c.seq, c.storyTime, `${c.speakerName} → ${c.listenerName}`, c.toldText,
+      c.slanted ? badge('SLANTED', 'warn') : '—', c.beliefUpdate ? `“${c.beliefUpdate.claim}” ${c.beliefUpdate.before} → ${c.beliefUpdate.after}` : '—'])) : null);
 }

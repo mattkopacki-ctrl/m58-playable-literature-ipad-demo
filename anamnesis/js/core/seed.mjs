@@ -54,7 +54,8 @@ export function seedEvents() {
         { text: 'Prove she is not imagining things', weight: 0.6, tags: ['truth'] }],
       fears: [{ text: 'Enclosed dark spaces', weight: 0.9, tags: ['cellar', 'dark'] }],
       beliefs: [{ claim: 'The house is wrong', confidence: 0.8 }],
-      memories: [{ id: 'mem-ines-1', text: 'Locked in a records basement as a child', at: -20000, tags: ['cellar', 'dark', 'locked'], valence: -0.9, arousal: 0.9, rehearsals: [-15000, -2000, -50] }],
+      memories: [{ id: 'mem-ines-1', text: 'Locked in a records basement as a child', at: -20000, tags: ['cellar', 'dark', 'locked'], valence: -0.9, arousal: 0.9, rehearsals: [-15000, -2000, -50] },
+        { id: 'mem-ines-2', text: 'Heard the cellar door open at 03:00 on the second night', at: 27, tags: ['cellar', 'dark', 'sound', 'night'], valence: -0.7, arousal: 0.8, rehearsals: [] }],
     } }],
     ['entity.create', { kind: 'character', id: T, sample: true, data: {
       name: 'Theo Marsh', role: 'Skeptical engineer', worldId: W,
