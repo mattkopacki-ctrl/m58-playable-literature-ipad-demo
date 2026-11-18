@@ -74,7 +74,7 @@ function render() {
   for (const a of document.querySelectorAll('#nav a')) a.setAttribute('aria-current', a.dataset.route === route ? 'page' : 'false');
   const ctx = {
     state: app.state, events: app.events, params, query, scratch: (app.scratch[route] ||= {}), storage: app.storage,
-    dispatch, go, status: setStatus, rerender: render, exportLog,
+    dispatch, go, status: setStatus, rerender: render, exportLog, getState: () => app.state,
     persist: async () => { const ok = await requestPersistence(); await refreshStorage(); setStatus(ok ? 'Persistent storage granted.' : 'Browser declined persistent storage. Add to Home Screen and export regularly.'); render(); },
   };
   const scrollY = window.scrollY;

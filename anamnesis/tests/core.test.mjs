@@ -433,3 +433,46 @@ test('T-023 terminal drives the same scenario as the GUI', () => {
   const k = runCommand('event knock', { state: g });
   assert.equal(k.actions[0].event, 'world.event');
 });
+
+import { stageCheck, unmetFor, RESEARCH_STAGES } from '../js/core/research.mjs';
+
+test('T-021 research progression: gated, one step at a time, enforced by the log', () => {
+  let s = replay(seeded());
+  const upd = patch => { s = apply(s, makeEvent(s.seq + 1, 'entity.update', { kind: 'inbox', id: 'inbox-new', patch })); return s.rejected.at(-1)?.seq === s.seq ? s.rejected.at(-1).why : 'ok'; };
+  const item = () => s.entities.inbox['inbox-new'];
+  assert.equal(item().stage, 'OBSERVED');
+  assert.match(upd({ stage: 'HYPOTHESIZED' }), /needs a written hypothesis/);
+  assert.match(upd({ stage: 'TESTED' }), /cannot be skipped/);
+  assert.equal(upd({ hypothesis: 'Returning to the cellar will not by itself bring the memory back.', stage: 'HYPOTHESIZED' }), 'ok');
+  assert.match(upd({ stage: 'TESTED' }), /how it was tested.*test result/);
+  assert.equal(upd({ test: 'Ran the cue-only recall check on Ines at hour 60.', testResult: 'INCONCLUSIVE', stage: 'TESTED' }), 'ok');
+  assert.match(upd({ stage: 'ELIGIBLE' }), /SUPPORTED.*reviewed evidence/);
+  assert.equal(upd({ testResult: 'SUPPORTED', evidence: 'SUPPORTED', stage: 'ELIGIBLE' }), 'ok');
+  assert.equal(item().stage, 'ELIGIBLE');
+  assert.match(upd({ hypothesis: '' }), /needs a written hypothesis/, 'cannot hollow out an item that sits at a later stage');
+  assert.equal(upd({ stage: 'OBSERVED' }), 'ok', 'moving back is always allowed');
+  assert.deepEqual(unmetFor({ claim: 'x' }, 'OBSERVED'), []);
+  assert.equal(stageCheck(item(), 'OBSERVED', 'BOGUS').ok, false);
+  assert.ok(computeIntel(replay(seeded())).stages.HYPOTHESIZED === 1);
+});
+
+test('T-021 eligibility changes nothing else; originals are preserved', () => {
+  let s = replay(seeded());
+  const before = JSON.stringify([s.entities.character, s.entities.world, s.entities.plot, s.entities.theme]);
+  const go = patch => { s = apply(s, makeEvent(s.seq + 1, 'entity.update', { kind: 'inbox', id: 'inbox-retelling', patch }, '2026-11-18T05:00:00.000Z')); };
+  go({ original: 'Full pasted source text.' });
+  assert.equal(s.entities.inbox['inbox-retelling'].capturedAt, '2026-11-18T05:00:00.000Z');
+  go({ original: 'Tampered text.' });
+  assert.match(s.rejected.at(-1).why, /preserved and cannot be edited/);
+  assert.equal(s.entities.inbox['inbox-retelling'].original, 'Full pasted source text.');
+  go({ test: 'Old House run', testResult: 'SUPPORTED', stage: 'TESTED' }); go({ stage: 'ELIGIBLE' });
+  assert.equal(s.entities.inbox['inbox-retelling'].stage, 'ELIGIBLE');
+  assert.equal(JSON.stringify([s.entities.character, s.entities.world, s.entities.plot, s.entities.theme]), before, 'no character, world, plot or theme changed');
+  assert.ok(computeIntel(s).findings.some(f => /eligible for promotion and await an owner decision/.test(f.text)));
+  go({ annotations: [...s.entities.inbox['inbox-retelling'].annotations, { category: 'motif', note: 'clocks', quote: 'stopped at three' }, { category: 'nonsense', note: 'x' }] });
+  assert.deepEqual(s.entities.inbox['inbox-retelling'].annotations.slice(-2).map(a => a.category), ['motif', 'event']);
+  const bad = apply(replay(seeded()), makeEvent(13, 'entity.create', { kind: 'inbox', id: 'x', data: { title: 't', stage: 'ELIGIBLE' } }));
+  assert.match(bad.rejected.at(-1).why, /research stage ELIGIBLE/);
+  const t = runCommand('stage context TESTED', { state: replay(seeded()) });
+  assert.equal(t.actions.length, 0); assert.match(t.out.join(' '), /cannot move OBSERVED → TESTED/);
+});

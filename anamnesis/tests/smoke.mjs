@@ -100,6 +100,24 @@ await page.locator('.prompt-in').press('Enter');
 await page.waitForTimeout(300);
 check('terminal refuses an unrecallable memory (feasibility)', (await page.locator('.screen').innerText()).includes('cannot tell'));
 
+// Research progression: gate blocks, then passes after the hypothesis is saved; original is preserved.
+await page.goto(base + '#/inbox/inbox-new');
+await page.getByRole('button', { name: '2 Hypothesized' }).click();
+check('research stage gate blocks without a hypothesis', (await page.locator('#status').innerText()).includes('needs a written hypothesis'));
+await page.locator('textarea[name="hypothesis"]').fill('Returning to the cellar will not by itself bring the memory back.');
+await page.locator('textarea[name="original"]').fill('Pasted source paragraph for the record.');
+await page.getByRole('button', { name: 'Save', exact: true }).click();
+await page.waitForFunction(() => window.__anamnesis.state.entities.inbox['inbox-new'].hypothesis.length > 0);
+await page.getByRole('button', { name: '2 Hypothesized' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.entities.inbox['inbox-new'].stage === 'HYPOTHESIZED');
+check('research item advances to HYPOTHESIZED once the hypothesis is saved', true);
+check('original is shown read-only with capture time and digest', (await page.locator('main').innerText()).includes('read-only') && await page.locator('textarea[name="original"]').count() === 0);
+await page.locator('form:has(select[name="category"]) input[name="note"]').fill('Place alone is a weak cue');
+await page.getByRole('button', { name: '+ Add annotation' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.entities.inbox['inbox-new'].annotations.length === 1);
+check('annotation added', true);
+if (shots) await page.screenshot({ path: `${shots}/ipad-research.png` });
+
 // Old House: install, advance, perception matrix, private knowledge, terminal parity.
 await page.goto(base + '#/simulator');
 await page.getByRole('button', { name: 'Install Old House ▸' }).click();

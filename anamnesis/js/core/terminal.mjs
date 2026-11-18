@@ -7,6 +7,7 @@ import { analyzeText } from './analyzer.mjs';
 import { computeIntel } from './intel.mjs';
 import { SITUATIONS } from './seed.mjs';
 import { uid } from './rng.mjs';
+import { RESEARCH_STAGES, stageCheck } from './research.mjs';
 import { OLD_HOUSE } from './oldhouse.mjs';
 import { stepScenario, scenarioStatus, inspectCharacter, buildWorldEvent, clockOf } from './scenario.mjs';
 
@@ -34,6 +35,7 @@ export const HELP = [
   'characters                   same as: ls character',
   'analyze <library title>      text metrics',
   'triage <inbox title> <NEW|TRIAGED|FILED|REJECTED>',
+  'stage <inbox title> <OBSERVED|HYPOTHESIZED|TESTED|ELIGIBLE>   move a research item along',
   'intel                        health checks',
   'log [n]                      last n events (default 10)',
   'stats                        counts',
@@ -196,6 +198,16 @@ export function runCommand(line, { state, events = [] }) {
       if (!item || !INBOX_STATUS.includes(status)) { say('usage: triage <inbox title> <NEW|TRIAGED|FILED|REJECTED>'); break; }
       actions.push({ type: 'dispatch', event: 'entity.update', payload: { kind: 'inbox', id: item.id, patch: { status } } });
       say(`${item.title}: ${item.status} → ${status}`);
+      break;
+    }
+    case 'stage': {
+      const to = (args.at(-1) || '').toUpperCase();
+      const item = findEntity(state, 'inbox', args.slice(0, -1).join(' '));
+      if (!item || !RESEARCH_STAGES.includes(to)) { say(`usage: stage <inbox title> <${RESEARCH_STAGES.join('|')}>`); break; }
+      const gate = stageCheck(item, item.stage, to);
+      if (!gate.ok) { say(`${item.title}: cannot move ${item.stage} → ${to}`, ...gate.why.map(w => '  ' + w)); break; }
+      actions.push({ type: 'dispatch', event: 'entity.update', payload: { kind: 'inbox', id: item.id, patch: { stage: to } } });
+      say(`${item.title}: ${item.stage} → ${to}`);
       break;
     }
     case 'intel': {

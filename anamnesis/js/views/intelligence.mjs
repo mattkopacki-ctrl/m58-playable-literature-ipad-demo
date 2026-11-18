@@ -5,6 +5,7 @@ import { EVIDENCE, EVIDENCE_LABEL, displayName } from '../core/schema.mjs';
 import { saveEntity } from './common.mjs';
 import { evidenceBadge } from './entities.mjs';
 import { uid } from '../core/rng.mjs';
+import { STAGE_LABEL } from '../core/research.mjs';
 
 const ROUTE = { character: 'characters', world: 'worlds', plot: 'plots', theme: 'themes', inbox: 'inbox', library: 'library' };
 
@@ -26,6 +27,8 @@ export function intelligenceView(ctx) {
         ent ? h('a', { href: `#/${ROUTE[k]}/${ent.id}` }, 'open ›') : null);
     })) : h('p', {}, badge('ALL CLEAR', 'ok'))),
     panel('Research evidence mix', table(['Evidence status', 'Items', 'Share'], EVIDENCE.map(e => [evidenceBadge(e), intel.evidence[e], total ? `${Math.round(intel.evidence[e] / total * 100)}%` : '—']))),
+    panel('Research progression', table(['Stage', 'Items'], Object.entries(intel.stages).map(([k, v]) => [STAGE_LABEL[k], v])),
+      h('p', { class: 'dim' }, 'Eligible for promotion is a status only. No source changes any weight or rule automatically.')),
     panel(`Intelligence notes (${notes.length})`,
       btn('+ New note', async () => { await ctx.dispatch('entity.create', { kind: 'intel', id: uid('intel'), data: { title: 'New note' } }); }, 'small'),
       notes.map(n => noteForm(ctx, n))),

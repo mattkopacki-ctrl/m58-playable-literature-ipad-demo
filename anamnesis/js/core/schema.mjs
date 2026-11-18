@@ -1,6 +1,8 @@
 // Entity kinds and normalisation. Every stored entity passes through normalize()
 // so the reducer never holds malformed data.
 
+import { RESEARCH_STAGES, TEST_RESULTS, ANNOTATION_CATEGORIES } from './research.mjs';
+
 export const KINDS = ['library', 'inbox', 'character', 'world', 'plot', 'theme', 'intel'];
 
 export const EVIDENCE = ['UNREVIEWED', 'ESTABLISHED', 'SUPPORTED', 'CONTESTED', 'SIMULATION', 'FICTIONAL'];
@@ -37,6 +39,9 @@ const normalizers = {
     claim: str(d.claim, 4000), excerpt: str(d.excerpt, 8000), notes: str(d.notes, 8000),
     evidence: oneOf(d.evidence, EVIDENCE, 'UNREVIEWED'), status: oneOf(d.status, INBOX_STATUS, 'NEW'),
     tags: tagList(d.tags), links: list(d.links, x => str(x, 80)).filter(Boolean),
+    stage: oneOf(d.stage, RESEARCH_STAGES, 'OBSERVED'), original: str(d.original, 200000), capturedAt: str(d.capturedAt, 40),
+    hypothesis: str(d.hypothesis, 4000), test: str(d.test, 4000), testResult: oneOf(d.testResult, TEST_RESULTS, 'NONE'),
+    annotations: list(d.annotations, a => ({ category: oneOf(a.category, ANNOTATION_CATEGORIES, 'event'), note: str(a.note, 2000), quote: str(a.quote, 2000) }), 300),
   }),
   character: d => ({
     name: str(d.name, 120) || 'Unnamed', role: str(d.role, 200), summary: str(d.summary, 4000),

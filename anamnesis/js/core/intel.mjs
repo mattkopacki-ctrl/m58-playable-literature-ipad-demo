@@ -1,6 +1,7 @@
 // Intelligence: derived health checks over the whole project state. Pure.
 import { liveList } from './store.mjs';
 import { EVIDENCE } from './schema.mjs';
+import { RESEARCH_STAGES } from './research.mjs';
 
 export function computeIntel(state) {
   const chars = liveList(state, 'character');
@@ -35,6 +36,8 @@ export function computeIntel(state) {
       if (!state.entities[k]?.[id]) add('ERROR', 'Research', `"${i.title}" links to missing ${l}.`, `inbox:${i.id}`);
     }
   }
+  const eligible = inbox.filter(i => i.stage === 'ELIGIBLE');
+  if (eligible.length) add('INFO', 'Research', `${eligible.length} research item(s) are eligible for promotion and await an owner decision. Nothing changes automatically.`, null);
   const unverified = state.decisions.filter(d => !d.verifications.length);
   if (unverified.length) add('INFO', 'Decisions', `${unverified.length} recorded decision(s) not yet replay-verified.`, null);
   const failed = state.decisions.filter(d => d.verifications.some(v => !v.ok));
@@ -47,6 +50,6 @@ export function computeIntel(state) {
     counts: { characters: chars.length, worlds: worlds.length, plots: plots.length, themes: themes.length,
       research: inbox.length, library: liveList(state, 'library').length, decisions: state.decisions.length,
       simruns: state.simruns.length, conversations: state.conversations.length, beliefUpdates: state.beliefUpdates.length, events: state.seq },
-    evidence, findings,
+    evidence, stages: Object.fromEntries(RESEARCH_STAGES.map(st => [st, inbox.filter(i => i.stage === st).length])), findings,
   };
 }

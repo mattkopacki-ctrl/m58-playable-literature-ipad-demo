@@ -1,6 +1,7 @@
 // Append-only event log + pure reducer. State is always a replay of the log, so
 // nothing is edited in place and every change is traceable (NUE-CR-001 rule 2).
 import { KINDS, normalize } from './schema.mjs';
+import { stageCheck } from './research.mjs';
 
 export const EVENT_TYPES = ['entity.create', 'entity.update', 'entity.archive', 'entity.restore',
   'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note', 'belief.update', 'conversation.record', 'world.event', 'world.act', 'scenario.advance'];
@@ -41,13 +42,26 @@ export function apply(state, ev) {
       case 'entity.create': {
         if (!KINDS.includes(p.kind)) return reject('unknown kind');
         if (!p.id || state.entities[p.kind][p.id]) return reject('missing or duplicate id');
-        const ent = { id: p.id, kind: p.kind, ...normalize(p.kind, p.data), createdAt: ev.at, updatedAt: ev.at, rev: 1, archived: false, sample: !!p.sample };
+        const data = normalize(p.kind, p.data);
+        if (p.kind === 'inbox') {
+          const gate = stageCheck(data, data.stage, data.stage);
+          if (!gate.ok) return reject(`research stage ${data.stage}: ${gate.why.join('; ')}`);
+          if (data.original) data.capturedAt = ev.at;
+        }
+        const ent = { id: p.id, kind: p.kind, ...data, createdAt: ev.at, updatedAt: ev.at, rev: 1, archived: false, sample: !!p.sample };
         return { ...s, entities: { ...state.entities, [p.kind]: { ...state.entities[p.kind], [p.id]: ent } } };
       }
       case 'entity.update': {
         const cur = state.entities[p.kind]?.[p.id];
         if (!cur) return reject('update of missing entity');
         const merged = normalize(p.kind, { ...cur, ...p.patch });
+        if (p.kind === 'inbox') {
+          // Originals are preserved: once captured, the text and its capture time never change.
+          if (cur.original && merged.original !== cur.original) return reject('the captured original is preserved and cannot be edited');
+          merged.capturedAt = cur.original ? cur.capturedAt : (merged.original ? ev.at : '');
+          const gate = stageCheck(merged, cur.stage, merged.stage);
+          if (!gate.ok) return reject(`research stage ${merged.stage}: ${gate.why.join('; ')}`);
+        }
         const ent = { ...cur, ...merged, updatedAt: ev.at, rev: cur.rev + 1 };
         return { ...s, entities: { ...state.entities, [p.kind]: { ...state.entities[p.kind], [p.id]: ent } } };
       }

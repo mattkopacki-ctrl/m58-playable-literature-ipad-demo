@@ -149,3 +149,6 @@ details.option > summary::before { content: '▸'; color: var(--hi); } details.o
 h3 { font-size: .85rem; text-transform: uppercase; color: var(--amber); margin: 1rem 0 .3rem; }
 .metric-v.small { font-size: 1.05rem; }
 .excluded { margin-top: .4rem; }
+
+.stage-row { margin: .3rem 0 .6rem; }
+pre.original { max-height: 240px; overflow: auto; white-space: pre-wrap; font: 15px/1.5 Georgia, serif; border: 1px solid var(--line2); border-radius: var(--radius); padding: .6rem; margin: .3rem 0; }

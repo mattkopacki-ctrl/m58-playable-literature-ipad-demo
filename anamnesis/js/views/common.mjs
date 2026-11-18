@@ -45,6 +45,8 @@ export async function saveEntity(ctx, kind, ent, patch) {
   const after = normalize(kind, { ...ent, ...patch });
   if (stableStringify(before) === stableStringify(after)) { ctx.status('No changes to save.'); return false; }
   await ctx.dispatch('entity.update', { kind, id: ent.id, patch });
+  const st = ctx.getState(), rej = st.rejected.at(-1);
+  if (rej && rej.seq === st.seq) { ctx.status(`Not saved: ${rej.why}.`); return false; }
   ctx.status(`Saved ${displayName(kind, after)} (rev ${ent.rev + 1}).`);
   return true;
 }

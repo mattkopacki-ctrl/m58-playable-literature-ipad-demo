@@ -96,7 +96,9 @@ export function seedEvents() {
       title: 'Biased retellings yield biased memories', source: 'Tversky & Marsh (2000), Cognitive Psychology',
       url: 'https://scholars.duke.edu/publication/651240', evidence: 'ESTABLISHED', status: 'FILED',
       claim: 'Retelling an event with a slant shifts the teller’s later memory toward that slant.',
-      notes: 'Supports drift in Theo’s recollection after Ines retells the night (beat 3). Via NUE-CR-001.',
+      notes: 'Supports drift in Theo’s recollection after Ines retells the night (beat 3). Via NUE-CR-001.', stage: 'HYPOTHESIZED',
+      hypothesis: 'After Ines retells the night with her slant, Theo’s own account of the figure on the landing will move toward her version.',
+      annotations: [{ category: 'causality', note: 'Retelling → slanted recollection trace → later recall drifts', quote: '' }, { category: 'theme', note: 'Memory is rebuilt, not replayed', quote: '' }],
       tags: ['memory', 'retelling'], links: ['theme:' + TH1, 'character:' + T] } }],
     ['entity.create', { kind: 'inbox', id: 'inbox-repression', sample: true, data: {
       title: 'Repressed memory with intact recovery', source: 'Otgaar et al. (2019), Perspectives on Psychological Science',
