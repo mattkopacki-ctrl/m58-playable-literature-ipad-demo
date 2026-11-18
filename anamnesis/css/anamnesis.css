@@ -170,3 +170,9 @@ pre.original { max-height: 240px; overflow: auto; white-space: pre-wrap; font: 1
 .hbar { display: block; height: 100%; min-width: 3px; background: var(--hi); border-radius: 0 4px 4px 0; opacity: .85; }
 .hbar-row:hover .hbar { opacity: 1; }
 .hbar-n { text-align: right; color: var(--ink); }
+
+.checklist ul { margin: .2rem 0 .6rem; }
+.studio fieldset fieldset { background: rgba(0,0,0,.12); }
+.channel { border-color: var(--accent2); }
+.sticky-save { position: sticky; bottom: 2.4rem; background: var(--panel); padding: .5rem 0; z-index: 2; }
+.preview { border-left: 3px solid var(--violet); padding-left: .8rem; margin-top: .6rem; }

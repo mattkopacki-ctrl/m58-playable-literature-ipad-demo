@@ -495,3 +495,95 @@ test('company precondition: telling needs someone else present', () => {
   assert.match(feasibility(lone, { requires: { company: true } }, 3, { occupancy: { Cellar: 1 } }).why, /no one else at Cellar/);
   assert.equal(feasibility(lone, { requires: { company: true } }, 3, { occupancy: { Cellar: 2 } }).ok, true);
 });
+
+import { compileScenario, scenarioDataFromBuiltIn } from '../js/core/studio.mjs';
+import { previewScenario } from '../js/core/scenario.mjs';
+
+const withEvent = (s, type, payload) => apply(s, makeEvent(s.seq + 1, type, payload, FIXED));
+const summary = (s, scId) => ({
+  acts: s.actions.filter(a => a.scenarioId === scId).map(a => `${a.tick}|${a.characterId}|${a.label}|${a.to}`),
+  seen: s.worldEvents.filter(e => e.id.startsWith(`we-${scId}-`)).map(e => `${e.clock}|${e.title}|${e.perceptions.map(p => p.characterId + ':' + p.channel).join(',')}`),
+  told: s.conversations.filter(c => c.scenarioId === scId).map(c => `${c.tick}|${c.speakerId}>${c.listenerId}`),
+});
+
+test('T-028 an editable copy of the Old House runs exactly like the built-in', () => {
+  const base = replay(ohInstall());
+  let a = base; for (let i = 0; i < 8; i++) a = stepScenario(a, OLD_HOUSE).state;
+  let b = withEvent(base, 'entity.create', { kind: 'scenario', id: 'scn-copy', data: scenarioDataFromBuiltIn(OLD_HOUSE) });
+  const c = compileScenario(b.entities.scenario['scn-copy'], b);
+  assert.deepEqual(c.errors, []);
+  for (let i = 0; i < 8; i++) b = stepScenario(b, c.scenario).state;
+  const sa = summary(a, 'oldhouse'), sb = summary(b, 'scn-copy');
+  assert.equal(sa.acts.length, 40);
+  assert.deepEqual(sb, sa);
+  assert.equal(b.rejected.length, 0);
+});
+
+const harrowScenario = over => ({
+  name: 'Breakfast at Harrow', worldId: 'world-harrow', prompt: 'Breakfast. What do you do?', start: '08:00', ticks: 3,
+  facts: [{ key: 'kettle', value: 'COLD' }],
+  cast: [{ characterId: 'character-ines', place: 'Kitchen', asleep: false }, { characterId: 'character-theo', place: 'Front hall', asleep: false },
+    { characterId: 'character-daniel', place: 'Landing', asleep: true }],
+  events: [{ id: 'e1', minute: 1, title: 'A cup falls', place: 'Kitchen', truth: 'A cup slid off the shelf on its own.', valence: -0.4, arousal: 0.6,
+    channels: [{ name: 'saw', places: ['Kitchen'], wakes: true, text: 'A cup slid off the shelf and broke', tags: ['cup', 'kitchen'] },
+      { name: 'heard', places: ['Front hall'], wakes: false, text: 'Something broke in the kitchen', tags: ['sound'] }] }],
+  options: [
+    { id: 'o-kettle', label: 'Put the kettle on', tags: ['safety', 'rule'], requires: { awake: 'awake', places: ['Kitchen'], world: ['kettle=COLD'] },
+      effects: { setFacts: [{ key: 'kettle', value: 'HOT' }], remember: { text: 'I put the kettle on', tags: ['kettle'] } } },
+    { id: 'o-go', label: 'Go to the kitchen', tags: ['truth', 'approach'], requires: { awake: 'awake', notPlaces: ['Kitchen'], knows: ['sound'] }, effects: { moveTo: 'Kitchen' } },
+    { id: 'o-tell', label: 'Say what I saw', tags: ['social', 'truth'], requires: { awake: 'awake', company: true, knows: ['cup'], lacks: ['said-cup'] },
+      effects: { tellHere: 'cup', remember: { text: 'I said what I saw', tags: ['said-cup'] } } },
+    { id: 'o-wait', label: 'Wait', tags: ['safety'], requires: { awake: 'awake' } },
+    { id: 'o-sleep', label: 'Sleep on', tags: [], requires: { awake: 'asleep' } },
+  ], ...over });
+
+test('T-028 authored scenario from scratch: start positions, perception, conditions, facts, telling', () => {
+  let s = withEvent(replay(seeded()), 'entity.create', { kind: 'scenario', id: 'scn-b', data: harrowScenario() });
+  const c = compileScenario(s.entities.scenario['scn-b'], s);
+  assert.deepEqual(c.errors, []);
+  const before = JSON.stringify(s);
+  const pv = previewScenario(s, c.scenario, 3);
+  assert.equal(JSON.stringify(s), before, 'preview writes nothing');
+  for (let i = 0; i < 3; i++) s = stepScenario(s, c.scenario).state;
+  assert.deepEqual(summary(s, 'scn-b'), summary(pv.state, 'scn-b'), 'preview matches the real run');
+  assert.equal(s.rejected.length, 0);
+  const ch = n => s.entities.character[`character-${n}`];
+  assert.equal(ch('daniel').place, 'Landing', 'start position applied by an entity.update event');
+  assert.ok(ch('ines').memories.some(m => m.text === 'A cup slid off the shelf and broke'));
+  assert.ok(ch('theo').memories.some(m => m.text === 'Something broke in the kitchen'));
+  assert.ok(!ch('daniel').memories.some(m => m.originId?.startsWith('we-scn-b')), 'Daniel, asleep on the landing, perceives nothing');
+  const acts = s.actions.filter(a => a.scenarioId === 'scn-b');
+  assert.ok(acts.some(a => a.characterId === 'character-theo' && a.to === 'Kitchen'), 'Theo goes to the kitchen after hearing it');
+  assert.equal(acts.filter(a => a.optionId === 'o-kettle').length <= 1, true, 'kettle option closes once the fact changes');
+  if (acts.some(a => a.optionId === 'o-kettle')) assert.equal(s.scenarios['scn-b'].facts.kettle, 'HOT');
+  assert.ok(acts.filter(a => a.characterId === 'character-daniel').every(a => a.label === 'Sleep on'));
+  assert.ok(stepScenario.length && (() => { try { stepScenario(s, c.scenario); return false; } catch (e) { return /last tick/.test(e.message); } })());
+});
+
+test('T-028 validation catches authoring mistakes before anything runs', () => {
+  const s = replay(seeded());
+  const errs = data => compileScenario({ id: 'x', ...normalize('scenario', data) }, s);
+  assert.match(errs({ ...harrowScenario(), worldId: '' }).errors.join(' '), /Choose a world/);
+  assert.match(errs({ ...harrowScenario(), cast: [] }).errors.join(' '), /at least one character/);
+  assert.match(errs(harrowScenario({ cast: [{ characterId: 'character-ines', place: 'Attic' }] })).errors.join(' '), /"Attic" is not a place/);
+  assert.match(errs(harrowScenario({ options: harrowScenario().options.filter(o => o.id !== 'o-sleep') })).errors.join(' '), /starts asleep/);
+  assert.match(errs(harrowScenario({ events: [{ ...harrowScenario().events[0], minute: 9 }] })).errors.join(' '), /after the last minute/);
+  assert.match(errs(harrowScenario({ events: [{ ...harrowScenario().events[0], channels: [{ places: ['Kitchen'], text: '' }] }] })).errors.join(' '), /write what a character perceives/);
+  assert.match(errs(harrowScenario({ options: [...harrowScenario().options, { label: 'Odd', requires: { world: ['moon'] } }] })).errors.join(' '), /must be someoneAsleep or fact=value/);
+  assert.match(errs(harrowScenario({ options: [...harrowScenario().options, { label: 'Hm', requires: { world: ['door=OPEN'] } }] })).warnings.join(' '), /never set/);
+  assert.deepEqual(errs(harrowScenario()).errors, []);
+  assert.equal(normalize('scenario', { ticks: 9999, start: '25:00' }).ticks, 240);
+  assert.equal(normalize('scenario', { start: '25:00' }).start, '00:00');
+});
+
+test('T-028 a character with no possible action is logged as idle, not a crash', () => {
+  let s = withEvent(replay(seeded()), 'entity.create', { kind: 'scenario', id: 'scn-c', data: harrowScenario({
+    options: [{ id: 'o-k', label: 'Only in kitchen', requires: { awake: 'awake', places: ['Kitchen'] } }, { id: 'o-s', label: 'Sleep on', requires: { awake: 'asleep' } }] }) });
+  const c = compileScenario(s.entities.scenario['scn-c'], s);
+  assert.match(c.warnings.join(' '), /no possible action/);
+  s = stepScenario(s, c.scenario).state;
+  const theo = s.actions.find(a => a.characterId === 'character-theo');
+  assert.equal(theo.label, '(no feasible action)');
+  assert.match(theo.why, /not at Kitchen/);
+  assert.equal(s.simruns.at(-1).idle.length, 1);
+});

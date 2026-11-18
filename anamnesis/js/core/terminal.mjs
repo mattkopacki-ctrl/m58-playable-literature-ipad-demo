@@ -9,7 +9,8 @@ import { SITUATIONS } from './seed.mjs';
 import { uid } from './rng.mjs';
 import { RESEARCH_STAGES, stageCheck } from './research.mjs';
 import { OLD_HOUSE } from './oldhouse.mjs';
-import { stepScenario, scenarioStatus, inspectCharacter, buildWorldEvent, clockOf } from './scenario.mjs';
+import { stepScenario, scenarioStatus, inspectCharacter, buildWorldEvent, clockOf, previewScenario } from './scenario.mjs';
+import { compileScenario } from './studio.mjs';
 
 const ALIAS = { characters: 'character', chars: 'character', char: 'character', worlds: 'world', plots: 'plot', themes: 'theme',
   research: 'inbox', notes: 'intel', lib: 'library', books: 'library' };
@@ -33,6 +34,9 @@ export const HELP = [
   'inspect <name>               what one character knows (never world truth)',
   'event knock                  author injects another knock at the basement door',
   'characters                   same as: ls character',
+  'scenarios                    list authored scenarios and their check status',
+  'preview <scenario> [n]       run n minutes in memory only (nothing saved)',
+  'run <scenario> [n]           run n minutes of an authored scenario (saved)',
   'analyze <library title>      text metrics',
   'triage <inbox title> <NEW|TRIAGED|FILED|REJECTED>',
   'stage <inbox title> <OBSERVED|HYPOTHESIZED|TESTED|ELIGIBLE>   move a research item along',
@@ -137,6 +141,31 @@ export function runCommand(line, { state, events = [] }) {
       break;
     }
     case 'characters': return runCommand('ls character', { state, events });
+    case 'scenarios': {
+      const list = liveList(state, 'scenario');
+      say(`${list.length} authored scenario(s)`, ...list.map(e => { const c = compileScenario(e, state); return `  ${e.name.padEnd(32)} ${String(state.scenarios?.[e.id]?.tick || 0).padStart(3)}/${e.ticks} min  ${c.errors.length ? c.errors.length + ' to fix' : 'ready'}`; }));
+      break;
+    }
+    case 'preview': case 'run': {
+      const n = Number(args.at(-1));
+      const name = (Number.isFinite(n) && args.length > 1 ? args.slice(0, -1) : args).join(' ');
+      const ent = findEntity(state, 'scenario', name);
+      if (!ent) { say(`usage: ${cmd} <scenario> [minutes]`); break; }
+      const c = compileScenario(ent, state);
+      if (!c.scenario) { say(`${ent.name} cannot run yet:`, ...c.errors.map(e => '  ' + e)); break; }
+      const mins = Number.isFinite(n) && args.length > 1 ? Math.max(1, n) : 1;
+      try {
+        const r = previewScenario(state, c.scenario, mins);
+        for (const t of r.ticks) {
+          say(`${t.clock}  ` + t.actions.map(a => `${a.characterName.split(' ')[0]}: ${a.label}`).join(' | '));
+          for (const e of t.worldEvents) say(`       * ${e.title} — perceived by ${e.perceptions.map(p => p.characterName.split(' ')[0]).join(', ') || 'no one'}`);
+          if (cmd.toLowerCase() === 'run') for (const [event, payload] of t.events) actions.push({ type: 'dispatch', event, payload });
+        }
+        if (!r.ticks.length) say(`${ent.name} has already finished.`);
+        say(cmd.toLowerCase() === 'run' ? '  saved to the log.' : '  preview only: nothing saved.');
+      } catch (err) { say(err.message); }
+      break;
+    }
     case 'oldhouse': {
       if (scenarioStatus(state, OLD_HOUSE).installed) { say('Old House is already installed. Try: status, tick'); break; }
       if (state.entities.world[OLD_HOUSE.worldId]) { say('Old House world exists but its cast is incomplete; not installing over it.'); break; }

@@ -37,7 +37,7 @@ export function buildWorldEvent(template, { id, storyTime, characters, provenanc
 }
 
 export function scenarioStatus(state, scenario) {
-  const sc = state.scenario?.id === scenario.id ? state.scenario : null;
+  const sc = state.scenarios?.[scenario.id] || null;
   return { installed: scenario.cast.every(id => state.entities.character[id]), tick: sc?.tick || 0, done: (sc?.tick || 0) >= scenario.maxTicks,
     clock: sc ? sc.clock : clockOf(scenario.t0), facts: sc?.facts || scenario.facts };
 }
@@ -55,6 +55,12 @@ export function stepScenario(state, scenario) {
 
   push('scenario.advance', { scenarioId: scenario.id, tick, storyTime: now, clock: clockOf(now), status: 'PAUSED', facts: scenario.facts });
 
+  // 0. Starting positions (authored scenarios), written as ordinary entity updates.
+  if (tick === 1) for (const st0 of scenario.start || []) {
+    const ch = w.entities.character[st0.characterId];
+    if (ch && (ch.place !== st0.place || ch.asleep !== !!st0.asleep)) push('entity.update', { kind: 'character', id: ch.id, patch: { place: st0.place, asleep: !!st0.asleep }, scenarioId: scenario.id });
+  }
+
   // 1. Scripted world events for this tick.
   (scenario.script[tick] || []).forEach((tpl, i) => push('world.event', buildWorldEvent(tpl, { id: `we-${scenario.id}-t${tick}-${i + 1}`, storyTime: now, characters: castOf(w, scenario) })));
 
@@ -62,9 +68,17 @@ export function stepScenario(state, scenario) {
   const snapshot = castOf(w, scenario);
   const occupancy = {};
   for (const c of snapshot) occupancy[c.place] = (occupancy[c.place] || 0) + 1;
-  const situation = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep), occupancy });
-  const decisions = snapshot.map(ch => decide(ch, situation, { now, seed: tick }));
-  push('sim.run', { id: `run-${scenario.id}-t${tick}`, scenarioId: scenario.id, tick, situation, now, seed: tick, decisions });
+  const facts = w.scenarios?.[scenario.id]?.facts || scenario.facts || {};
+  const factFlags = Object.fromEntries(Object.entries(facts).map(([k, v]) => [`${k}=${v}`, true]));
+  const situation = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep), occupancy, ...factFlags });
+  const decisions = [], idle = [];
+  for (const ch of snapshot) {
+    try { decisions.push(decide(ch, situation, { now, seed: tick })); }
+    catch (err) { idle.push({ characterId: ch.id, characterName: ch.name, why: err.message }); }
+  }
+  push('sim.run', { id: `run-${scenario.id}-t${tick}`, scenarioId: scenario.id, tick, situation, now, seed: tick, decisions, idle });
+  for (const i of idle) push('world.act', { id: `act-${scenario.id}-t${tick}-${i.characterId}`, scenarioId: scenario.id, tick, characterId: i.characterId, characterName: i.characterName,
+    storyTime: now, optionId: '', label: '(no feasible action)', why: i.why, from: w.entities.character[i.characterId].place, to: w.entities.character[i.characterId].place, effects: {}, told: [] });
 
   // 3. Actions take effect in cast order.
   const emitted = [];
@@ -124,4 +138,20 @@ export function knowledgeMatrix(state, scenario) {
       const heard = ch.memories.find(m => m.source === 'told' && direct.has(m.originId));
       return heard ? { how: `told by ${state.entities.character[heard.from]?.name || '?'}`, text: heard.text } : { how: 'unaware', text: '' };
     }) }));
+}
+
+/** Run ticks in memory only. Nothing is written; the caller's state is untouched. */
+export function previewScenario(state, scenario, ticks) {
+  let s = state;
+  const out = [];
+  for (let i = 0; i < ticks; i++) {
+    if (scenarioStatus(s, scenario).done) break;
+    const r = stepScenario(s, scenario);
+    s = r.state;
+    out.push({ clock: r.clock, tick: r.tick, events: r.events,
+      actions: r.events.filter(e => e[0] === 'world.act').map(e => e[1]),
+      worldEvents: r.events.filter(e => e[0] === 'world.event').map(e => e[1]),
+      conversations: r.events.filter(e => e[0] === 'conversation.record').map(e => e[1]) });
+  }
+  return { ticks: out, state: s };
 }

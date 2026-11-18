@@ -18,6 +18,7 @@ export function emptyState() {
     worldEvents: [],
     actions: [],
     scenario: null,
+    scenarios: {},
     notes: [],
     rejected: [],
   };
@@ -137,14 +138,17 @@ export function apply(state, ev) {
           if (ch.memories.some(m => m.id === t.memory.id)) return reject('duplicate told memory');
           chars = { ...chars, [ch.id]: bump({ ...ch, ...normalize('character', { ...ch, asleep: t.woke ? false : ch.asleep, memories: [...ch.memories, t.memory] }) }, ev) };
         }
-        const scenario = fx.setFacts && state.scenario ? { ...state.scenario, facts: { ...state.scenario.facts, ...fx.setFacts } } : state.scenario;
-        return { ...s, scenario, actions: [...state.actions, { ...p, seq: ev.seq, at: ev.at }], entities: { ...state.entities, character: chars } };
+        const cur = state.scenarios?.[p.scenarioId];
+        const scenarios = fx.setFacts && cur ? { ...state.scenarios, [cur.id]: { ...cur, facts: { ...cur.facts, ...fx.setFacts } } } : state.scenarios;
+        const scenario = scenarios?.[state.scenario?.id] || state.scenario;
+        return { ...s, scenario, scenarios, actions: [...state.actions, { ...p, seq: ev.seq, at: ev.at }], entities: { ...state.entities, character: chars } };
       }
       case 'scenario.advance': {
-        const prev = state.scenario?.id === p.scenarioId ? state.scenario : null;
+        const prev = state.scenarios?.[p.scenarioId] || null;
         if (prev && p.tick !== prev.tick + 1) return reject(`scenario tick ${p.tick} does not follow ${prev.tick}`);
         if (!prev && p.tick !== 1) return reject('scenario must start at tick 1');
-        return { ...s, scenario: { id: p.scenarioId, tick: p.tick, storyTime: p.storyTime, clock: p.clock, status: p.status || 'PAUSED', facts: { ...(prev?.facts || p.facts || {}) } } };
+        const sc = { id: p.scenarioId, tick: p.tick, storyTime: p.storyTime, clock: p.clock, status: p.status || 'PAUSED', facts: { ...(prev?.facts || p.facts || {}) } };
+        return { ...s, scenario: sc, scenarios: { ...(state.scenarios || {}), [sc.id]: sc } };
       }
       case 'system.note':
         return { ...s, notes: [...state.notes, { text: String(p.text || ''), seq: ev.seq, at: ev.at }] };

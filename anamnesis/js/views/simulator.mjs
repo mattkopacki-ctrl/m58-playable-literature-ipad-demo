@@ -7,6 +7,8 @@ import { parseOptions } from '../core/cognition.mjs';
 import { uid } from '../core/rng.mjs';
 import { OLD_HOUSE } from '../core/oldhouse.mjs';
 import { stepScenario, scenarioStatus, inspectCharacter, knowledgeMatrix } from '../core/scenario.mjs';
+import { studioView } from './studio.mjs';
+import { compileScenario, scenarioDataFromBuiltIn } from '../core/studio.mjs';
 
 function currentSituation(ctx) {
   const pick = ctx.scratch.situation || SITUATIONS[0].id;
@@ -16,6 +18,8 @@ function currentSituation(ctx) {
 }
 
 export function simulatorView(ctx) {
+  const authored = ctx.params[0] && ctx.state.entities.scenario[ctx.params[0]];
+  if (authored && !authored.archived) return studioView(ctx, authored);
   const chars = liveList(ctx.state, 'character');
   ctx.scratch.cast ||= chars.map(c => c.id);
   const cast = chars.filter(c => ctx.scratch.cast.includes(c.id));
@@ -36,6 +40,7 @@ export function simulatorView(ctx) {
   const latest = runs[0];
   return h('div', { class: 'single' },
     oldHousePanel(ctx),
+    studioPanel(ctx),
     panel('Free scenario · one situation, chosen cast', situationPicker(ctx), castBox, h('div', { class: 'row' }, btn('Run simulation ▸', run, 'primary'))),
     latest ? panel(`Latest run · #${latest.seq} · hour ${latest.now} · seed ${latest.seed}`,
       h('p', {}, latest.situation.prompt),
@@ -102,3 +107,32 @@ function oldHousePanel(ctx) {
     h('p', { class: 'dim' }, 'Deterministic: the same project state always produces the same minute. The cause of the knocking is unknown and nothing here decides it. A run cannot be rewound yet (that waits on branching).'));
 }
 const clock = hrs => { const m = Math.round(hrs * 60); return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };
+
+function studioPanel(ctx) {
+  const list = liveList(ctx.state, 'scenario');
+  const ohInstalled = scenarioStatus(ctx.state, OLD_HOUSE).installed;
+  const archived = Object.values(ctx.state.entities.scenario).filter(e => e.archived);
+  return panel(`Scenario Studio · authored scenarios (${list.length})`,
+    h('p', { class: 'dim' }, 'Write your own scenarios with the existing characters and worlds: who is where, what happens each minute, who can perceive it, and what each character may do. Preview without saving, then run.'),
+    h('div', { class: 'row' },
+      btn('+ New scenario', async () => {
+        const id = uid('scenario');
+        const w = liveList(ctx.state, 'world')[0];
+        await ctx.dispatch('entity.create', { kind: 'scenario', id, data: { name: 'New scenario', worldId: w?.id || '', start: '22:00', ticks: 5,
+          options: [{ id: uid('opt'), label: 'Stay put', tags: ['safety'], requires: { awake: 'awake' } }, { id: uid('opt'), label: 'Sleep on', tags: [], requires: { awake: 'asleep' } }] } });
+        ctx.go('simulator', id);
+      }, 'primary'),
+      ohInstalled ? btn('Make an editable copy of the Old House', async () => {
+        const id = uid('scenario');
+        await ctx.dispatch('entity.create', { kind: 'scenario', id, data: scenarioDataFromBuiltIn(OLD_HOUSE) });
+        ctx.go('simulator', id);
+      }) : h('span', { class: 'dim' }, 'Install the Old House to make an editable copy of it.')),
+    list.length ? table(['Scenario', 'World', 'Cast', 'Progress', 'Check'], list.map(e => {
+      const c = compileScenario(e, ctx.state);
+      const tick = ctx.state.scenarios?.[e.id]?.tick || 0;
+      return [h('a', { href: `#/simulator/${e.id}` }, e.name), ctx.state.entities.world[e.worldId]?.name || '—', String(e.cast.length), `${tick} / ${e.ticks} min`,
+        c.errors.length ? badge(`${c.errors.length} to fix`, 'bad') : badge('ready', 'ok')];
+    })) : h('p', { class: 'dim' }, 'No authored scenarios yet.'),
+    archived.length ? h('details', {}, h('summary', {}, `Archived (${archived.length})`), h('ul', { class: 'plain' }, archived.map(e => h('li', {}, e.name, ' ',
+      btn('Restore', () => ctx.dispatch('entity.restore', { kind: 'scenario', id: e.id }), 'small'))))) : null);
+}

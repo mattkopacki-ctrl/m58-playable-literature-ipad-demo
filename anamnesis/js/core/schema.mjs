@@ -3,7 +3,7 @@
 
 import { RESEARCH_STAGES, TEST_RESULTS, ANNOTATION_CATEGORIES } from './research.mjs';
 
-export const KINDS = ['library', 'inbox', 'character', 'world', 'plot', 'theme', 'intel'];
+export const KINDS = ['library', 'inbox', 'character', 'world', 'plot', 'theme', 'intel', 'scenario'];
 
 export const EVIDENCE = ['UNREVIEWED', 'ESTABLISHED', 'SUPPORTED', 'CONTESTED', 'SIMULATION', 'FICTIONAL'];
 export const EVIDENCE_LABEL = {
@@ -29,6 +29,7 @@ export const tagList = v => {
 const list = (v, fn, max = 200) => (Array.isArray(v) ? v : []).slice(0, max).map(fn);
 
 const normalizers = {
+  scenario: d => scenarioNormalizer(d),
   library: d => ({
     title: str(d.title, 200) || 'Untitled', author: str(d.author, 200),
     form: oneOf(d.form, ['manuscript', 'reference', 'note', 'excerpt'], 'manuscript'),
@@ -85,6 +86,35 @@ const normalizers = {
     evidence: oneOf(d.evidence, EVIDENCE, 'UNREVIEWED'), tags: tagList(d.tags),
   }),
 };
+
+// ---- Authored scenarios (T-028). Pure data; js/core/studio.mjs compiles it for the runner.
+const int = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+const optNum = (v, lo, hi) => (v === '' || v == null || !Number.isFinite(Number(v))) ? null : Math.max(lo, Math.min(hi, Number(v)));
+const strs = (v, max = 120) => list(v, x => str(x, max).trim()).filter(Boolean);
+const kv = v => list(v, x => ({ key: str(x?.key, 60).trim(), value: str(x?.value, 120).trim() })).filter(x => x.key);
+const channel = c => ({ name: str(c?.name, 80) || 'perceived', places: strs(c?.places), wakes: c?.wakes === true, text: str(c?.text, 1000),
+  tags: tagList(c?.tags), valence: optNum(c?.valence, -1, 1), arousal: optNum(c?.arousal, 0, 1) });
+const worldEventData = e => ({ title: str(e?.title, 200) || 'Untitled event', place: str(e?.place, 120), truth: str(e?.truth, 4000),
+  valence: num(e?.valence, -1, 1, 0), arousal: num(e?.arousal, 0, 1, 0.5), channels: list(e?.channels, channel, 20) });
+export const SCENARIO_LIMITS = { ticks: 240, events: 100, options: 40 };
+
+const scenarioNormalizer = d => ({
+  name: str(d.name, 200) || 'Untitled scenario', worldId: str(d.worldId, 80), prompt: str(d.prompt, 500) || 'What do you do this minute?',
+  tags: tagList(d.tags), start: /^([01]\d|2[0-3]):[0-5]\d$/.test(d.start) ? d.start : '00:00', ticks: int(d.ticks, 1, SCENARIO_LIMITS.ticks, 8),
+  situationId: str(d.situationId, 80), facts: kv(d.facts),
+  cast: list(d.cast, c => ({ characterId: str(c?.characterId, 80), place: str(c?.place, 120), asleep: c?.asleep === true }), 30).filter(c => c.characterId),
+  events: list(d.events, (e, i) => ({ id: str(e?.id, 80) || 'ev-' + i, minute: int(e?.minute, 1, SCENARIO_LIMITS.ticks, 1), ...worldEventData(e) }), SCENARIO_LIMITS.events),
+  options: list(d.options, (o, i) => ({
+    id: str(o?.id, 80) || 'opt-' + i, label: str(o?.label, 200) || `Option ${i + 1}`, tags: tagList(o?.tags),
+    beliefs: list(o?.beliefs, b => ({ claim: str(b?.claim, 300).trim(), sign: Number(b?.sign) < 0 ? -1 : 1 }), 10).filter(b => b.claim),
+    requires: { awake: oneOf(o?.requires?.awake, ['any', 'awake', 'asleep'], 'awake'), places: strs(o?.requires?.places), notPlaces: strs(o?.requires?.notPlaces),
+      knows: tagList(o?.requires?.knows), lacks: tagList(o?.requires?.lacks), company: o?.requires?.company === true, world: strs(o?.requires?.world, 200) },
+    effects: { moveTo: str(o?.effects?.moveTo, 120),
+      remember: { text: str(o?.effects?.remember?.text, 1000), tags: tagList(o?.effects?.remember?.tags), valence: num(o?.effects?.remember?.valence, -1, 1, 0), arousal: num(o?.effects?.remember?.arousal, 0, 1, 0.3) },
+      wakeWith: str(o?.effects?.wakeWith, 60).trim().toLowerCase(), tellHere: str(o?.effects?.tellHere, 60).trim().toLowerCase(), setFacts: kv(o?.effects?.setFacts),
+      emits: o?.effects?.emits ? { ...worldEventData(o.effects.emits), actorText: str(o.effects.emits.actorText, 1000), actorTags: tagList(o.effects.emits.actorTags) } : null },
+  }), SCENARIO_LIMITS.options),
+});
 
 export function normalize(kind, data) {
   const fn = normalizers[kind];

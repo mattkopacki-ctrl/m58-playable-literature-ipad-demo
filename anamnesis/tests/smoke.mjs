@@ -142,6 +142,47 @@ await page.locator('.prompt-in').press('Enter');
 await page.waitForTimeout(200);
 check('terminal inspect shows hearsay source', (await page.locator('.screen').innerText()).includes('told by Daniel Hale'));
 
+// Scenario Studio (T-028): author a scenario in the GUI, check, preview (nothing saved), run.
+await page.goto(base + '#/simulator');
+await page.getByRole('button', { name: '+ New scenario' }).click();
+await page.waitForFunction(() => /#\/simulator\/scenario-/.test(location.hash));
+const scnId = await page.evaluate(() => location.hash.split('/')[2]);
+await page.locator('input[name="name"]').fill('Breakfast test');
+await page.locator('input[name="cast"][value="character-ines"]').check();
+await page.locator('select[name="place-character-ines"]').selectOption('Kitchen');
+await page.locator('input[name="cast"][value="character-theo"]').check();
+await page.locator('select[name="place-character-theo"]').selectOption('Front hall');
+await page.getByRole('button', { name: '+ World event' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.entities.scenario[id].events.length === 1, scnId);
+check('Studio: structural edit saved the cast typed before it', await page.evaluate(id => window.__anamnesis.state.entities.scenario[id].cast.length === 2 && window.__anamnesis.state.entities.scenario[id].name === 'Breakfast test', scnId));
+check('Studio: incomplete event is reported, not run', (await page.locator('main').innerText()).includes('PROBLEM') && await page.getByRole('button', { name: 'Run one minute' }).isDisabled());
+await page.locator('input[name="e-0-title"]').fill('A cup falls');
+await page.locator('input[name="e-0-c-0-places"][value="Kitchen"]').check();
+await page.locator('textarea[name="e-0-c-0-text"]').fill('A cup slid off the shelf and broke');
+await page.locator('input[name="e-0-c-0-tags"]').fill('cup kitchen');
+await page.getByRole('button', { name: 'Save scenario' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.entities.scenario[id].events[0].channels[0].text.length > 0, scnId);
+check('Studio: scenario becomes READY TO RUN', (await page.locator('main').innerText()).includes('READY TO RUN'));
+const evBeforePreview = await page.evaluate(() => window.__anamnesis.events.length);
+await page.getByRole('button', { name: 'Preview (not saved) ▸' }).click();
+await page.waitForSelector('.preview');
+check('Studio: preview shows a timeline and writes nothing', (await page.locator('.preview').innerText()).includes('A cup falls') && evBeforePreview === await page.evaluate(() => window.__anamnesis.events.length));
+if (shots) await page.screenshot({ path: `${shots}/ipad-studio-preview.png` });
+await page.getByRole('button', { name: 'Run one minute' }).click();
+await page.waitForFunction(id => window.__anamnesis.state.scenarios?.[id]?.tick === 1, scnId);
+const inesSaw = await page.evaluate(() => window.__anamnesis.state.entities.character['character-ines'].memories.some(m => m.text === 'A cup slid off the shelf and broke'));
+const theoSaw = await page.evaluate(() => window.__anamnesis.state.entities.character['character-theo'].memories.some(m => m.text === 'A cup slid off the shelf and broke'));
+check('Studio: real run perceived only where authored (Ines in kitchen yes, Theo in hall no)', inesSaw && !theoSaw);
+await page.goto(base + '#/simulator');
+await page.getByRole('button', { name: 'Make an editable copy of the Old House' }).click();
+await page.waitForFunction(() => /#\/simulator\/scenario-/.test(location.hash) && /editable copy/i.test(document.querySelector('main').innerText));
+check('Studio: editable Old House copy passes its checks', (await page.locator('main').innerText()).includes('READY TO RUN'));
+await page.goto(base + '#/terminal');
+await page.locator('.prompt-in').fill('scenarios');
+await page.locator('.prompt-in').press('Enter');
+await page.waitForTimeout(200);
+check('terminal lists authored scenarios', /2 authored scenario/.test(await page.locator('.screen').innerText()));
+
 // System Monitor: integrity checks read-only and pass.
 await page.goto(base + '#/monitor');
 const evBefore = await page.evaluate(() => window.__anamnesis.events.length);
@@ -151,7 +192,7 @@ check('System Monitor: stored log verifies against on-screen state', (await page
 await page.getByRole('button', { name: 'Verify every decision by replay' }).click();
 await page.waitForSelector('#verify-dec');
 const decTxt = await page.locator('#verify-dec').innerText();
-check('System Monitor: every recorded decision recomputes identically', /DECISIONS OK/.test(decTxt) && /4[0-9] of 4[0-9]/.test(decTxt), decTxt);
+check('System Monitor: every recorded decision recomputes identically', /DECISIONS OK/.test(decTxt) && /(\d+) of \1 recomputed/.test(decTxt), decTxt);
 check('System Monitor checks write nothing to the log', evBefore === await page.evaluate(() => window.__anamnesis.events.length));
 if (shots) await page.screenshot({ path: `${shots}/ipad-monitor.png` });
 // Theme: navy by default, phosphor optional, choice survives reload.
