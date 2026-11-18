@@ -7,6 +7,8 @@ import { analyzeText } from './analyzer.mjs';
 import { computeIntel } from './intel.mjs';
 import { SITUATIONS } from './seed.mjs';
 import { uid } from './rng.mjs';
+import { OLD_HOUSE } from './oldhouse.mjs';
+import { stepScenario, scenarioStatus, inspectCharacter, buildWorldEvent, clockOf } from './scenario.mjs';
 
 const ALIAS = { characters: 'character', chars: 'character', char: 'character', worlds: 'world', plots: 'plot', themes: 'theme',
   research: 'inbox', notes: 'intel', lib: 'library', books: 'library' };
@@ -24,6 +26,12 @@ export const HELP = [
   'tell <speaker> <listener> <memory#> [hour] [cue,cue]   speaker tells listener a memory',
   'beliefs <character>          list beliefs',
   'believe <character> <+|-strength> <claim…>   apply evidence, e.g. believe theo -0.6 "claim"',
+  'oldhouse                     install the five-character Old House scenario (SAMPLE)',
+  'tick [n]                     advance the Old House by n minutes (default 1)',
+  'status                       scenario clock, facts and where everyone is',
+  'inspect <name>               what one character knows (never world truth)',
+  'event knock                  author injects another knock at the basement door',
+  'characters                   same as: ls character',
   'analyze <library title>      text metrics',
   'triage <inbox title> <NEW|TRIAGED|FILED|REJECTED>',
   'intel                        health checks',
@@ -122,6 +130,55 @@ export function runCommand(line, { state, events = [] }) {
       const u = updateBelief(ch, claim, { direction: Math.sign(v), strength: Math.abs(v), credibility: 0.7, source: { type: 'observation', text: 'terminal' } });
       actions.push({ type: 'dispatch', event: 'belief.update', payload: u });
       say(`${ch.name}: "${u.claim}" ${u.before} → ${u.after}  (perseverance ×${u.terms[3].value}, credibility 0.7)`);
+      break;
+    }
+    case 'characters': return runCommand('ls character', { state, events });
+    case 'oldhouse': {
+      if (scenarioStatus(state, OLD_HOUSE).installed) { say('Old House is already installed. Try: status, tick'); break; }
+      if (state.entities.world[OLD_HOUSE.worldId]) { say('Old House world exists but its cast is incomplete; not installing over it.'); break; }
+      for (const [event, payload] of OLD_HOUSE.installEvents()) actions.push({ type: 'dispatch', event, payload });
+      say('Old House installed: 5 characters, 02:13. Try: tick, status, inspect mara');
+      break;
+    }
+    case 'tick': {
+      const n = Math.max(1, Math.min(OLD_HOUSE.maxTicks, Number(args[0]) || 1));
+      let st = state;
+      try {
+        for (let i = 0; i < n; i++) {
+          const r = stepScenario(st, OLD_HOUSE);
+          for (const [event, payload] of r.events) actions.push({ type: 'dispatch', event, payload });
+          say(`${r.clock}  ` + r.events.filter(e => e[0] === 'world.act').map(e => `${e[1].characterName.split(' ')[0]}: ${e[1].label}`).join(' | '));
+          for (const e of r.events.filter(e => e[0] === 'world.event')) say(`       * ${e[1].title} — perceived by ${e[1].perceptions.map(p => p.characterName.split(' ')[0]).join(', ') || 'no one'}`);
+          st = r.state;
+        }
+      } catch (err) { say(err.message); }
+      break;
+    }
+    case 'status': {
+      const st = scenarioStatus(state, OLD_HOUSE);
+      if (!st.installed) { say('No scenario installed. Type: oldhouse'); break; }
+      say(`Old House · ${st.clock} · tick ${st.tick}/${OLD_HOUSE.maxTicks} · PAUSED`, '  ' + Object.entries(st.facts).map(([k, v]) => `${k}: ${v}`).join(' · '),
+        `  world events: ${state.worldEvents.filter(e => e.provenance === 'author').length} authored, ${state.worldEvents.filter(e => e.provenance !== 'author').length} from actions`,
+        ...OLD_HOUSE.cast.map(id => inspectCharacter(state, id)).map(c => `  ${c.name.padEnd(14)} ${c.asleep ? 'asleep' : 'awake '}  ${c.place.padEnd(16)} ${c.lastAction}`));
+      break;
+    }
+    case 'inspect': {
+      const q = args.join(' ').toLowerCase();
+      const cast = OLD_HOUSE.cast.map(id => state.entities.character[id]).filter(Boolean);
+      const ch = cast.find(c => c.name.toLowerCase().startsWith(q)) || findEntity(state, 'character', q);
+      if (!ch || !q) { say('usage: inspect <name>'); break; }
+      const c = inspectCharacter(state, ch.id);
+      say(`${c.name} · ${c.asleep ? 'asleep' : 'awake'} · ${c.place || '—'} · last: ${c.lastAction}`, '  beliefs:', ...c.beliefs.map(b => `    ${b.confidence}  ${b.claim}`),
+        '  knows (own perception and hearsay only):', ...c.memories.map(m => `    [${m.source === 'told' ? 'told by ' + m.from : m.source === 'retold' ? 'own retelling' : 'perceived'}] ${m.text}`));
+      break;
+    }
+    case 'event': {
+      const st = scenarioStatus(state, OLD_HOUSE);
+      if ((args[0] || '').toLowerCase() !== 'knock' || !st.installed || !st.tick) { say('usage: event knock   (needs the Old House running: oldhouse, tick)'); break; }
+      const payload = buildWorldEvent(OLD_HOUSE.script[4][0], { id: `we-${OLD_HOUSE.id}-m${state.seq + 1}`, storyTime: state.scenario.storyTime,
+        characters: OLD_HOUSE.cast.map(id => state.entities.character[id]) });
+      actions.push({ type: 'dispatch', event: 'world.event', payload });
+      say(`${clockOf(payload.storyTime)} knock — perceived by ${payload.perceptions.map(p => p.characterName.split(' ')[0]).join(', ') || 'no one'}`);
       break;
     }
     case 'analyze': {

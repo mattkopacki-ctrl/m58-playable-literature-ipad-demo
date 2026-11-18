@@ -101,12 +101,18 @@ export function scoreOption(ch, situation, option, ctx) {
 }
 
 /**
- * Action preconditions. option.requires = { awake: true|false, places: [..], knows: [tag..] }.
+ * Action preconditions. option.requires = { awake, places, notPlaces, knows: [tag], lacks: [tag], world: [flag] }.
+ * World flags are read from situation.world, which is stored with the decision so replay is exact.
  * "knows" means the character holds a memory (from any source) carrying that tag by now.
  */
-export function feasibility(ch, option, now) {
+export function feasibility(ch, option, now, world = {}) {
   const r = option.requires;
   if (!r) return { ok: true, why: '' };
+  for (const w of r.world || []) if (!world[w]) return { ok: false, why: `world condition not met: ${w}` };
+  if (r.notPlaces?.includes(ch.place)) return { ok: false, why: `already at ${ch.place}` };
+  for (const tag of r.lacks || []) {
+    if ((ch.memories || []).some(m => m.at <= now && m.tags.includes(tag))) return { ok: false, why: `already done: ${tag}` };
+  }
   if (r.awake === true && ch.asleep) return { ok: false, why: 'asleep' };
   if (r.awake === false && !ch.asleep) return { ok: false, why: 'not asleep' };
   if (r.places?.length && !r.places.includes(ch.place)) return { ok: false, why: `not at ${r.places.join(' or ')} (is at ${ch.place || 'nowhere'})` };
@@ -122,7 +128,7 @@ export function decide(ch, situation, { now = 0, seed = 0 } = {}) {
   const ctx = { now, seed };
   const excluded = [];
   const open = situation.options.filter(o => {
-    const f = feasibility(ch, o, now);
+    const f = feasibility(ch, o, now, situation.world);
     if (!f.ok) excluded.push({ optionId: o.id, label: o.label, why: f.why });
     return f.ok;
   });

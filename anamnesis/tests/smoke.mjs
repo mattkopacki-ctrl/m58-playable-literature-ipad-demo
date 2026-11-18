@@ -100,6 +100,30 @@ await page.locator('.prompt-in').press('Enter');
 await page.waitForTimeout(300);
 check('terminal refuses an unrecallable memory (feasibility)', (await page.locator('.screen').innerText()).includes('cannot tell'));
 
+// Old House: install, advance, perception matrix, private knowledge, terminal parity.
+await page.goto(base + '#/simulator');
+await page.getByRole('button', { name: 'Install Old House ▸' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.entities.character['oh-june']);
+await page.getByRole('button', { name: 'Advance one minute ▸' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.scenario?.tick === 1);
+await page.waitForTimeout(200);
+const ohTxt = await page.locator('main').innerText();
+check('Old House tick 1: clock, residents and knowledge matrix shown', /02:13/.test(ohTxt) && /AWAKE/.test(ohTxt) && /WHO KNOWS WHAT/i.test(ohTxt) && /told by Daniel/.test(ohTxt), ohTxt.slice(0, 200));
+await page.getByRole('button', { name: 'Run to 02:20' }).click();
+await page.waitForFunction(() => window.__anamnesis.state.scenario?.tick === 8);
+const oh = await page.evaluate(() => { const s = window.__anamnesis.state; const cast = ['mara', 'daniel', 'elise', 'thomas', 'june'].map(n => s.entities.character['oh-' + n]);
+  return { rejected: s.rejected.length, keyHolders: cast.filter(c => c.memories.some(m => m.tags.includes('key'))).map(c => c.name),
+    leak: cast.some(c => c.memories.some(m => /Source unknown|inner face/.test(m.text))), eliseTold: cast[2].memories.some(m => m.source === 'told' && m.from === 'oh-daniel'), runs: s.simruns.filter(r => r.scenarioId === 'oldhouse').length }; });
+check('Old House ran to 02:20 with no rejected events', oh.rejected === 0 && oh.runs === 8, JSON.stringify(oh));
+check('Old House privacy: only Daniel knows the key; no truth leak; Elise knows by hearsay', oh.keyHolders.join() === 'Daniel Hale' && !oh.leak && oh.eliseTold);
+await page.waitForTimeout(200);
+if (shots) await page.screenshot({ path: `${shots}/ipad-oldhouse.png` });
+await page.goto(base + '#/terminal');
+await page.locator('.prompt-in').fill('inspect elise');
+await page.locator('.prompt-in').press('Enter');
+await page.waitForTimeout(200);
+check('terminal inspect shows hearsay source', (await page.locator('.screen').innerText()).includes('told by Daniel Hale'));
+
 // Draft protection: typed text survives an unrelated re-render, then saves cleanly.
 await page.goto(base + '#/characters/character-theo');
 await page.locator('input[name="role"]').fill('Engineer with a secret');

@@ -323,3 +323,113 @@ test('action preconditions exclude infeasible options with a logged reason', () 
   assert.equal(asleep.chosenOptionId, 'c');
   assert.throws(() => decide({ ...theo, asleep: true }, { id: 's', prompt: 'p', tags: [], options: [opts[1]] }, { now: 1 }), /no feasible action/);
 });
+
+import { OLD_HOUSE } from '../js/core/oldhouse.mjs';
+import { stepScenario, knowledgeMatrix, inspectCharacter, scenarioStatus } from '../js/core/scenario.mjs';
+
+const FIXED = '1970-01-01T00:00:00.000Z';
+const ohInstall = () => OLD_HOUSE.installEvents().map(([t, p], i) => makeEvent(i + 1, t, p, FIXED));
+function ohRun(ticks) {
+  let s = replay(ohInstall()); const log = [...ohInstall()];
+  for (let i = 0; i < ticks; i++) { const r = stepScenario(s, OLD_HOUSE); for (const [t, p] of r.events) log.push(makeEvent(log.length + 1, t, p, FIXED)); s = r.state; }
+  return { s, log };
+}
+const oh = n => `oh-${n}`;
+
+test('T-023 Old House installs: five characters, one asleep, no rejections', () => {
+  const s = replay(ohInstall());
+  assert.equal(s.rejected.length, 0);
+  assert.equal(OLD_HOUSE.cast.filter(id => s.entities.character[id]).length, 5);
+  assert.equal(s.entities.character[oh('elise')].asleep, true);
+  assert.equal(scenarioStatus(s, OLD_HOUSE).clock, '02:13');
+});
+
+test('T-023 perception: each character gets only their own channel; the sleeper gets nothing', () => {
+  const { s } = ohRun(1);
+  const mem = n => s.entities.character[oh(n)].memories.map(m => m.text);
+  assert.ok(mem('thomas').includes('Three slow knocks from inside the locked basement door'), 'Thomas in the kitchen hears it close');
+  assert.ok(mem('mara').includes('A dull knocking somewhere downstairs'), 'Mara on the landing hears it faintly');
+  assert.ok(!mem('mara').some(t => t.includes('Three slow knocks')), 'Mara does not get the close version');
+  const ev = s.worldEvents[0];
+  assert.deepEqual(ev.notPerceivedBy, [oh('elise')]);
+  assert.ok(!s.entities.character[oh('elise')].memories.some(m => m.originId === ev.id), 'Elise slept through it');
+  for (const id of OLD_HOUSE.cast) for (const m of s.entities.character[id].memories)
+    assert.ok(!/Source unknown|inner face/.test(m.text), 'world truth never appears in a character memory');
+});
+
+test('T-023 private knowledge: only Daniel knows where the key is, all night', () => {
+  const { s } = ohRun(8);
+  const knowsKey = OLD_HOUSE.cast.filter(id => s.entities.character[id].memories.some(m => m.tags.includes('key')));
+  assert.deepEqual(knowsKey, [oh('daniel')]);
+  assert.ok(!inspectCharacter(s, oh('mara')).memories.some(m => /key/.test(m.text)));
+  assert.equal(s.scenario.facts.basementDoor, 'LOCKED');
+  assert.equal(s.scenario.facts.knockSource, 'UNKNOWN');
+});
+
+test('T-023 action preconditions: unlocking needs the door and the key; sleepers can only sleep', () => {
+  const { s } = ohRun(2);
+  const run1 = s.simruns[0], run2 = s.simruns[1];
+  const elise = run1.decisions.find(d => d.characterId === oh('elise'));
+  assert.equal(elise.chosenOptionId, 'opt-sleep');
+  assert.equal(elise.ranking.length, 1);
+  assert.ok(elise.excluded.every(e => e.why === 'asleep'));
+  const mara2 = run2.decisions.find(d => d.characterId === oh('mara')); // at the basement stairs by tick 2
+  assert.equal(mara2.inputs.character.place, 'Basement stairs');
+  assert.equal(mara2.excluded.find(e => e.optionId === 'opt-unlock').why, 'does not know: key');
+  const daniel2 = run2.decisions.find(d => d.characterId === oh('daniel'));
+  assert.match(daniel2.excluded.find(e => e.optionId === 'opt-unlock').why, /not at Basement stairs/);
+  const danielAtDoor = { ...s.entities.character[oh('daniel')], place: 'Basement stairs' };
+  const d = decide(danielAtDoor, OLD_HOUSE.situation({ someoneAsleep: false }), { now: 2.3, seed: 1 });
+  assert.ok(d.ranking.some(r => r.optionId === 'opt-unlock'), 'feasible for Daniel at the door');
+  assert.notEqual(d.chosenOptionId, 'opt-unlock', 'but his own values keep him from choosing it');
+  assert.ok(run1.decisions.find(x => x.characterId === oh('thomas')).excluded.every(e => e.optionId !== 'opt-heating'));
+  assert.match(run1.decisions.find(x => x.characterId === oh('mara')).excluded.find(e => e.optionId === 'opt-heating').why, /not at Kitchen/);
+});
+
+test('T-023 hearsay: Elise learns of the knock only by being told, in the teller\'s version', () => {
+  const { s } = ohRun(8);
+  const row = knowledgeMatrix(s, OLD_HOUSE)[0];
+  const cell = row.cells[OLD_HOUSE.cast.indexOf(oh('elise'))];
+  assert.equal(cell.how, 'told by Daniel Hale');
+  assert.match(cell.text, /A dull knocking somewhere downstairs/, 'she got Daniel\'s faint version, not the close one');
+  const told = s.entities.character[oh('elise')].memories.find(m => m.source === 'told');
+  assert.equal(told.from, oh('daniel'));
+  assert.equal(s.entities.character[oh('elise')].asleep, false);
+  const heat = knowledgeMatrix(s, OLD_HOUSE).find(r => r.event.title === 'Heating test');
+  assert.equal(heat.event.provenance, 'simulation');
+  assert.equal(heat.cells[OLD_HOUSE.cast.indexOf(oh('thomas'))].how, 'did it');
+  assert.equal(heat.cells[OLD_HOUSE.cast.indexOf(oh('daniel'))].how, 'unaware', 'Daniel, upstairs, never learns of the heating test');
+});
+
+test('T-023 deterministic replay: two runs match, the log replays to the same state, every decision verifies', () => {
+  const a = ohRun(8), b = ohRun(8);
+  assert.deepEqual(a.log, b.log);
+  assert.deepEqual(replay(a.log), a.s);
+  assert.equal(a.s.rejected.length, 0);
+  assert.equal(a.s.scenario.clock, '02:20');
+  assert.equal(a.s.worldEvents.filter(e => e.provenance === 'author').length, 2, 'two authored events, as in the owner\'s experiment');
+  let n = 0;
+  for (const run of a.s.simruns) for (const d of run.decisions) { assert.equal(verifyDecision(JSON.parse(JSON.stringify(d))).ok, true); n++; }
+  assert.equal(n, 40);
+  assert.throws(() => stepScenario(a.s, OLD_HOUSE), /last tick/);
+  const skip = apply(replay(ohInstall()), makeEvent(99, 'scenario.advance', { scenarioId: 'oldhouse', tick: 3, storyTime: 2.25, clock: '02:15' }));
+  assert.match(skip.rejected.at(-1).why, /must start at tick 1/);
+});
+
+test('T-023 terminal drives the same scenario as the GUI', () => {
+  let s = replay(seeded());
+  const inst = runCommand('oldhouse', { state: s });
+  assert.equal(inst.actions.length, 6);
+  for (const a of inst.actions) s = apply(s, makeEvent(s.seq + 1, a.event, a.payload, FIXED));
+  const t = runCommand('tick 8', { state: s });
+  const viaTerminal = t.actions.map(a => [a.event, a.payload]);
+  let g = s; const viaGui = [];
+  for (let i = 0; i < 8; i++) { const r = stepScenario(g, OLD_HOUSE); viaGui.push(...r.events); g = r.state; }
+  assert.deepEqual(viaTerminal, viaGui);
+  assert.match(runCommand('status', { state: g }).out[0], /Old House · 02:20 · tick 8\/8/);
+  const insp = runCommand('inspect elise', { state: g }).out.join('\n');
+  assert.match(insp, /told by Daniel Hale/); assert.ok(!/Source unknown/.test(insp));
+  assert.match(runCommand('tick', { state: g }).out[0], /last tick/);
+  const k = runCommand('event knock', { state: g });
+  assert.equal(k.actions[0].event, 'world.event');
+});

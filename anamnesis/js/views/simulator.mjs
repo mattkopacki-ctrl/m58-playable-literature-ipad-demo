@@ -5,6 +5,8 @@ import { situationPicker, decisionView } from './characters.mjs';
 import { SITUATIONS } from '../core/seed.mjs';
 import { parseOptions } from '../core/cognition.mjs';
 import { uid } from '../core/rng.mjs';
+import { OLD_HOUSE } from '../core/oldhouse.mjs';
+import { stepScenario, scenarioStatus, inspectCharacter, knowledgeMatrix } from '../core/scenario.mjs';
 
 function currentSituation(ctx) {
   const pick = ctx.scratch.situation || SITUATIONS[0].id;
@@ -33,7 +35,8 @@ export function simulatorView(ctx) {
   const runs = ctx.state.simruns.slice().reverse();
   const latest = runs[0];
   return h('div', { class: 'single' },
-    panel('Scenario', situationPicker(ctx), castBox, h('div', { class: 'row' }, btn('Run simulation ▸', run, 'primary'))),
+    oldHousePanel(ctx),
+    panel('Free scenario · one situation, chosen cast', situationPicker(ctx), castBox, h('div', { class: 'row' }, btn('Run simulation ▸', run, 'primary'))),
     latest ? panel(`Latest run · #${latest.seq} · hour ${latest.now} · seed ${latest.seed}`,
       h('p', {}, latest.situation.prompt),
       table(['Character', 'Choice', 'p', 'Margin', 'Top reason'], latest.decisions.map(d => {
@@ -51,3 +54,51 @@ function divergence(run) {
   return h('p', {}, choices.size > 1 ? badge(`DIVERGENT · ${choices.size} different choices`, 'warn') : badge('CONVERGENT · all chose the same', 'ok'),
     ' Divergence comes only from logged character inputs; same seed → same draws.');
 }
+
+function oldHousePanel(ctx) {
+  const sc = OLD_HOUSE, st = scenarioStatus(ctx.state, sc);
+  const title = `${sc.name} · five characters · SAMPLE scenario`;
+  if (!st.installed) {
+    const partial = !!ctx.state.entities.world[sc.worldId];
+    return panel(title, h('p', {}, 'Mara, Daniel, Elise, Thomas and June. At 02:13 something knocks three times on the inside of the locked basement door. Each minute everyone decides what to do from what they themselves perceived or were told.'),
+      partial ? h('p', { class: 'warn' }, 'The Old House world exists but its cast is incomplete, so it cannot be installed again in this project.')
+        : btn('Install Old House ▸', async () => { for (const [t, p] of sc.installEvents()) await ctx.dispatch(t, p, { silent: true }); ctx.status('Old House installed: 5 characters at 02:13.'); ctx.rerender(); }, 'primary'));
+  }
+  const advance = async n => {
+    try {
+      let state = ctx.state, last;
+      for (let i = 0; i < n; i++) {
+        last = stepScenario(i === 0 ? ctx.state : state, sc);
+        for (const [t, p] of last.events) await ctx.dispatch(t, p, { silent: true });
+        state = last.state;
+      }
+      ctx.status(`Old House advanced to ${last.clock}.`);
+    } catch (err) { ctx.status(err.message); }
+    ctx.rerender();
+  };
+  const cast = sc.cast.map(id => inspectCharacter(ctx.state, id));
+  const matrix = knowledgeMatrix(ctx.state, sc);
+  const acts = ctx.state.actions.filter(a => a.scenarioId === sc.id);
+  const lastRun = [...ctx.state.simruns].reverse().find(r => r.scenarioId === sc.id);
+  return panel(title,
+    h('div', { class: 'metrics' },
+      h('div', { class: 'metric' }, h('div', { class: 'metric-v' }, st.clock), h('div', { class: 'metric-k' }, `tick ${st.tick} of ${sc.maxTicks} · paused`)),
+      ...Object.entries(st.facts).map(([k, v]) => h('div', { class: 'metric' }, h('div', { class: 'metric-v small' }, String(v)), h('div', { class: 'metric-k' }, k.replace(/([A-Z])/g, ' $1'))))),
+    h('div', { class: 'row' }, btn('Advance one minute ▸', () => advance(1), 'primary', { disabled: st.done ? 'disabled' : null }),
+      btn('Run to 02:20', () => advance(sc.maxTicks - st.tick), '', { disabled: st.done ? 'disabled' : null }),
+      st.done ? badge('END OF SCRIPTED WINDOW', 'dim') : null),
+    h('h3', {}, 'Residents'),
+    table(['Character', 'State', 'Place', 'Last action', ''], cast.map(c => [c.name, c.asleep ? badge('ASLEEP', 'dim') : badge('AWAKE', 'ok'), c.place, c.lastAction, h('a', { href: `#/characters/${c.id}` }, 'inspect ›')])),
+    h('h3', {}, 'Who knows what'),
+    matrix.length ? table(['World event', ...cast.map(c => c.name.split(' ')[0])], matrix.map(r => [`${r.event.clock} ${r.event.title}`,
+      ...r.cells.map(c => h('span', { title: c.text, class: c.how === 'unaware' ? 'dim' : '' }, c.how === 'unaware' ? '—' : c.how))]))
+      : h('p', { class: 'dim' }, 'Nothing has happened yet. Advance one minute.'),
+    h('details', { class: 'option' }, h('summary', {}, `Author view · world record (${matrix.length}) — characters never read this`),
+      table(['Time', 'Event', 'Truth', 'From', 'Each perceiver got'], matrix.map(r => [r.event.clock, r.event.title, r.event.truth, r.event.provenance === 'author' ? 'author script' : `action by ${ctx.state.entities.character[r.event.causedBy]?.name || '?'}`,
+        h('ul', { class: 'plain' }, r.event.perceptions.map(p => h('li', {}, `${p.characterName.split(' ')[0]} (${p.channel}): ${p.text}`)))]))),
+    acts.length ? h('details', { class: 'option' }, h('summary', {}, `Action log (${acts.length})`),
+      table(['Time', 'Who', 'Action', 'Where'], acts.slice().reverse().map(a => [a.storyTime ? clock(a.storyTime) : '', a.characterName, a.label + (a.told?.length ? ` (woke ${a.told.map(t => t.characterName.split(' ')[0]).join(', ')})` : ''), a.from === a.to ? a.to : `${a.from} → ${a.to}`]))) : null,
+    lastRun ? h('details', { class: 'option' }, h('summary', {}, `Why they chose · decisions at tick ${lastRun.tick}`), lastRun.decisions.map(d => h('details', { class: 'option' }, h('summary', {}, `${d.characterName} → ${d.chosenLabel}`), decisionView(d)))) : null,
+    h('p', { class: 'dim' }, 'Deterministic: the same project state always produces the same minute. The cause of the knocking is unknown and nothing here decides it. A run cannot be rewound yet (that waits on branching).'));
+}
+const clock = hrs => { const m = Math.round(hrs * 60); return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; };

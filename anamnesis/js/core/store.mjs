@@ -3,7 +3,7 @@
 import { KINDS, normalize } from './schema.mjs';
 
 export const EVENT_TYPES = ['entity.create', 'entity.update', 'entity.archive', 'entity.restore',
-  'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note', 'belief.update', 'conversation.record'];
+  'decision.record', 'decision.verify', 'sim.run', 'memory.recall', 'system.note', 'belief.update', 'conversation.record', 'world.event', 'world.act', 'scenario.advance'];
 
 export function emptyState() {
   return {
@@ -14,6 +14,9 @@ export function emptyState() {
     recalls: [],
     beliefUpdates: [],
     conversations: [],
+    worldEvents: [],
+    actions: [],
+    scenario: null,
     notes: [],
     rejected: [],
   };
@@ -93,6 +96,41 @@ export function apply(state, ev) {
         li2 = bump(li2, ev);
         return { ...s, beliefUpdates, conversations: [...state.conversations, { ...p, seq: ev.seq, at: ev.at }],
           entities: { ...state.entities, character: { ...state.entities.character, [sp2.id]: sp2, [li2.id]: li2 } } };
+      }
+      case 'world.event': {
+        // Objective record. Truth stays here; each perceiver gets only their own channel's text.
+        if (!p.id || state.worldEvents.some(w => w.id === p.id)) return reject('missing or duplicate world event id');
+        let chars = state.entities.character;
+        for (const pc of p.perceptions || []) {
+          const ch = chars[pc.characterId];
+          if (!ch) return reject('perception for missing character');
+          if (ch.memories.some(m => m.id === pc.memory.id)) return reject('duplicate perception');
+          chars = { ...chars, [ch.id]: bump({ ...ch, ...normalize('character', { ...ch, asleep: pc.woke ? false : ch.asleep, memories: [...ch.memories, pc.memory] }) }, ev) };
+        }
+        return { ...s, worldEvents: [...state.worldEvents, { ...p, seq: ev.seq, at: ev.at }], entities: { ...state.entities, character: chars } };
+      }
+      case 'world.act': {
+        let chars = state.entities.character;
+        const actor = chars[p.characterId];
+        if (!actor) return reject('action by missing character');
+        const fx = p.effects || {};
+        const mems = fx.remember ? [...actor.memories, fx.remember] : actor.memories;
+        if (fx.remember && actor.memories.some(m => m.id === fx.remember.id)) return reject('duplicate action memory');
+        chars = { ...chars, [actor.id]: bump({ ...actor, ...normalize('character', { ...actor, place: fx.moveTo || actor.place, memories: mems }) }, ev) };
+        for (const t of p.told || []) {
+          const ch = chars[t.characterId];
+          if (!ch) return reject('told a missing character');
+          if (ch.memories.some(m => m.id === t.memory.id)) return reject('duplicate told memory');
+          chars = { ...chars, [ch.id]: bump({ ...ch, ...normalize('character', { ...ch, asleep: t.woke ? false : ch.asleep, memories: [...ch.memories, t.memory] }) }, ev) };
+        }
+        const scenario = fx.setFacts && state.scenario ? { ...state.scenario, facts: { ...state.scenario.facts, ...fx.setFacts } } : state.scenario;
+        return { ...s, scenario, actions: [...state.actions, { ...p, seq: ev.seq, at: ev.at }], entities: { ...state.entities, character: chars } };
+      }
+      case 'scenario.advance': {
+        const prev = state.scenario?.id === p.scenarioId ? state.scenario : null;
+        if (prev && p.tick !== prev.tick + 1) return reject(`scenario tick ${p.tick} does not follow ${prev.tick}`);
+        if (!prev && p.tick !== 1) return reject('scenario must start at tick 1');
+        return { ...s, scenario: { id: p.scenarioId, tick: p.tick, storyTime: p.storyTime, clock: p.clock, status: p.status || 'PAUSED', facts: { ...(prev?.facts || p.facts || {}) } } };
       }
       case 'system.note':
         return { ...s, notes: [...state.notes, { text: String(p.text || ''), seq: ev.seq, at: ev.at }] };

@@ -145,3 +145,7 @@ details.option > summary::before { content: '▸'; color: var(--hi); } details.o
 
 /* draft protection */
 .draft-bar { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .3rem .6rem; margin-bottom: .4rem; border: 1px dashed var(--amber); color: var(--amber); border-radius: var(--radius); font-size: .8rem; letter-spacing: .08em; }
+
+h3 { font-size: .85rem; text-transform: uppercase; color: var(--amber); margin: 1rem 0 .3rem; }
+.metric-v.small { font-size: 1.05rem; }
+.excluded { margin-top: .4rem; }
