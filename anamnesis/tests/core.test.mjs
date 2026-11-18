@@ -484,3 +484,14 @@ test('T-022/T-020 terminal: sys summary, theme switch, monitor route', () => {
   assert.match(runCommand('theme pink', { state: s }).out[0], /usage/);
   assert.equal(runCommand('go monitor', { state: s }).actions[0].route, 'monitor');
 });
+
+test('company precondition: telling needs someone else present', () => {
+  const { s } = ohRun(8);
+  for (const a of s.actions.filter(a => a.optionId === 'opt-tell')) {
+    const others = s.simruns.find(r => r.tick === a.tick).situation.world.occupancy[a.from];
+    assert.ok(others > 1, `${a.characterName} told at ${a.from} with ${others} present`);
+  }
+  const lone = { ...s.entities.character[oh('june')], place: 'Cellar', asleep: false };
+  assert.match(feasibility(lone, { requires: { company: true } }, 3, { occupancy: { Cellar: 1 } }).why, /no one else at Cellar/);
+  assert.equal(feasibility(lone, { requires: { company: true } }, 3, { occupancy: { Cellar: 2 } }).ok, true);
+});

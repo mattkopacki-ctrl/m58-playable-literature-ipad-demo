@@ -82,7 +82,7 @@ export const OLD_HOUSE = {
           requires: { awake: true, knows: ['knock'], lacks: ['woke-others'], world: ['someoneAsleep'] },
           effects: { wakeWith: 'knock', remember: { text: 'I went round and woke whoever was still asleep', tags: ['woke-others'], valence: 0.1, arousal: 0.4 } } },
         { id: 'opt-tell', label: 'Tell whoever is here what I heard', tags: ['social', 'belonging', 'help'],
-          requires: { awake: true, knows: ['knock'], lacks: ['told-here'] },
+          requires: { awake: true, knows: ['knock'], lacks: ['told-here'], company: true },
           effects: { tellHere: 'knock', remember: { text: 'I said out loud what I had heard', tags: ['told-here'], valence: 0, arousal: 0.3 } } },
         { id: 'opt-watch', label: 'Watch the others from the landing', tags: ['control', 'solitude'], beliefs: [{ claim: C.deliberate, sign: 1 }],
           requires: { awake: true, notPlaces: ['Landing'], lacks: ['watched'] },

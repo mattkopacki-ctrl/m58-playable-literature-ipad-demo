@@ -101,7 +101,8 @@ export function scoreOption(ch, situation, option, ctx) {
 }
 
 /**
- * Action preconditions. option.requires = { awake, places, notPlaces, knows: [tag], lacks: [tag], world: [flag] }.
+ * Action preconditions. option.requires = { awake, places, notPlaces, knows: [tag], lacks: [tag], world: [flag], company: true }.
+ * company: at least one other awake-or-asleep cast member is at the same place (from situation.world.occupancy).
  * World flags are read from situation.world, which is stored with the decision so replay is exact.
  * "knows" means the character holds a memory (from any source) carrying that tag by now.
  */
@@ -116,6 +117,7 @@ export function feasibility(ch, option, now, world = {}) {
   if (r.awake === true && ch.asleep) return { ok: false, why: 'asleep' };
   if (r.awake === false && !ch.asleep) return { ok: false, why: 'not asleep' };
   if (r.places?.length && !r.places.includes(ch.place)) return { ok: false, why: `not at ${r.places.join(' or ')} (is at ${ch.place || 'nowhere'})` };
+  if (r.company && !((world.occupancy?.[ch.place] || 0) > 1)) return { ok: false, why: `no one else at ${ch.place || 'this place'}` };
   for (const tag of r.knows || []) {
     if (!(ch.memories || []).some(m => m.at <= now && m.tags.includes(tag))) return { ok: false, why: `does not know: ${tag}` };
   }

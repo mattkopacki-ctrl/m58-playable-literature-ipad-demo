@@ -60,7 +60,9 @@ export function stepScenario(state, scenario) {
 
   // 2. Everyone decides on the same snapshot.
   const snapshot = castOf(w, scenario);
-  const situation = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep) });
+  const occupancy = {};
+  for (const c of snapshot) occupancy[c.place] = (occupancy[c.place] || 0) + 1;
+  const situation = scenario.situation({ someoneAsleep: snapshot.some(c => c.asleep), occupancy });
   const decisions = snapshot.map(ch => decide(ch, situation, { now, seed: tick }));
   push('sim.run', { id: `run-${scenario.id}-t${tick}`, scenarioId: scenario.id, tick, situation, now, seed: tick, decisions });
 
