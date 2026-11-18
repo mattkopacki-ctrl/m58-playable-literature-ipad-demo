@@ -5,9 +5,10 @@ export const SITUATIONS = [
     id: 'sit-cellar-door', prompt: '03:00 — the cellar door opens on its own. What do you do?',
     tags: ['night', 'cellar', 'dark', 'sound'],
     options: [
-      { id: 'opt-1', label: 'Go down with a lamp', tags: ['risk', 'truth', 'approach', 'cellar', 'novel'] },
+      { id: 'opt-1', label: 'Go down with a lamp', tags: ['risk', 'truth', 'approach', 'cellar', 'novel'],
+        beliefs: [{ claim: 'Everything here has a mechanical explanation', sign: 1 }, { claim: 'The house is wrong', sign: -1 }] },
       { id: 'opt-2', label: 'Wake the others', tags: ['social', 'safety', 'belonging', 'help'] },
-      { id: 'opt-3', label: 'Lock the door and stay in bed', tags: ['safety', 'solitude', '!truth', 'flee'] },
+      { id: 'opt-3', label: 'Lock the door and stay in bed', tags: ['safety', 'solitude', '!truth', 'flee'], beliefs: [{ claim: 'The house is wrong', sign: 1 }] },
     ],
   },
   {
@@ -16,7 +17,7 @@ export const SITUATIONS = [
     options: [
       { id: 'opt-1', label: 'Read it', tags: ['truth', 'break-rule', '!loyalty', 'control'] },
       { id: 'opt-2', label: 'Hand it to its owner', tags: ['loyalty', 'rule', 'help', 'social'] },
-      { id: 'opt-3', label: 'Burn it', tags: ['control', 'safety', '!truth', 'risk'] },
+      { id: 'opt-3', label: 'Burn it', tags: ['control', 'safety', '!truth', 'risk'], beliefs: [{ claim: 'He can keep everyone safe if they do not ask', sign: 1 }] },
     ],
   },
   {

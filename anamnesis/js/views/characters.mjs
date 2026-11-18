@@ -80,11 +80,11 @@ export function situationPicker(ctx) {
   const custom = pick === 'custom' ? h('div', { class: 'custom' },
     field('Prompt', input('cp', ctx.scratch.customPrompt || '', { oninput: e => { ctx.scratch.customPrompt = e.target.value; } })),
     field('Situation tags', input('ct', ctx.scratch.customTags || '', { oninput: e => { ctx.scratch.customTags = e.target.value; } })),
-    field('Options', textarea('co', ctx.scratch.customOptions || 'Run [flee safety]\nHide [solitude safety]\nFight [confront risk]', 4, { oninput: e => { ctx.scratch.customOptions = e.target.value; } }), 'One per line: Label [tag, tag]. Tags: values (truth, safety…), !value to violate, risk social solitude rule break-rule help confront novel flee approach.'))
+    field('Options', textarea('co', ctx.scratch.customOptions || 'Run [flee safety]\nHide [solitude safety]\nFight [confront risk]', 4, { oninput: e => { ctx.scratch.customOptions = e.target.value; } }), 'One per line: Label [tag, tag] {+claim presumed true; -claim presumed false}. Tags: values (truth, safety…), !value to violate, risk social solitude rule break-rule help confront novel flee approach.'))
     : null;
   const sit = situationFromScratch(ctx);
   return h('div', {}, field('Situation', sel), custom,
-    pick !== 'custom' ? h('ul', { class: 'plain dim' }, sit.options.map(o => h('li', {}, `${o.label} [${o.tags.join(', ')}]`))) : null,
+    pick !== 'custom' ? h('ul', { class: 'plain dim' }, sit.options.map(o => h('li', {}, `${o.label} [${o.tags.join(', ')}]${(o.beliefs || []).map(b => ` {${b.sign > 0 ? '+' : '−'}${b.claim}}`).join('')}`))) : null,
     h('div', { class: 'row' },
       field('Story hour', input('sh', String(ctx.scratch.storyTime ?? 48), { inputmode: 'decimal', oninput: e => { ctx.scratch.storyTime = Number(e.target.value) || 0; } })),
       field('Seed', input('seed', String(ctx.scratch.seed ?? 0), { inputmode: 'numeric', oninput: e => { ctx.scratch.seed = Number(e.target.value) || 0; } }))));
@@ -97,6 +97,8 @@ export function decisionView(rec) {
     ...rec.ranking.map((r, i) => h('details', { class: 'option', open: i === 0 ? true : null },
       h('summary', {}, `${i === 0 ? '★ ' : ''}${r.label} — total ${r.total} · p ${r.probability}`),
       table(['Source', 'Term', 'Value', 'Why'], r.terms.map(t => [t.source, t.label, h('span', { class: t.value >= 0 ? 'pos' : 'neg' }, (t.value >= 0 ? '+' : '') + t.value), t.why])))),
+    rec.excluded?.length ? h('div', { class: 'excluded' }, h('p', { class: 'dim' }, 'Not possible for this character right now:'),
+      h('ul', { class: 'plain dim' }, rec.excluded.map(e => h('li', {}, `${e.label} — ${e.why}`)))) : null,
     h('p', { class: 'mono dim' }, `engine ${rec.engine} · inputs ${rec.inputsDigest} · output ${rec.outputDigest} · status SIMULATION TECHNIQUE`));
 }
 
@@ -114,7 +116,7 @@ function decisionLab(ctx, ent) {
     situationPicker(ctx),
     h('div', { class: 'row' }, btn('Decide ▸', run, 'primary'),
       res ? btn('Record decision', async () => { await ctx.dispatch('decision.record', { id: uid('dec'), ...res }); ctx.scratch.result = null; ctx.status('Decision recorded in the log.'); }) : null),
-    res ? decisionView(res) : h('p', { class: 'dim' }, 'Decide computes a ranked, term-by-term breakdown. Nothing is stored until you record it.'));
+    res ? decisionView(res) : h('p', { class: 'dim' }, 'Decide computes a ranked, term-by-term breakdown from values, goals, fears, traits, memories and held beliefs. Nothing is stored until you record it.'));
 }
 
 function decisionHistory(ctx, ent) {

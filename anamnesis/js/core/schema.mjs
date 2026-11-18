@@ -40,7 +40,7 @@ const normalizers = {
   }),
   character: d => ({
     name: str(d.name, 120) || 'Unnamed', role: str(d.role, 200), summary: str(d.summary, 4000),
-    worldId: str(d.worldId, 80),
+    worldId: str(d.worldId, 80), place: str(d.place, 120), asleep: d.asleep === true,
     traits: Object.fromEntries(TRAITS.map(t => [t, num(d.traits?.[t], 0, 1, 0.5)])),
     values: Object.fromEntries(VALUES.map(v => [v, num(d.values?.[v], 0, 1, 0.3)])),
     goals: list(d.goals, g => ({ text: str(g.text, 300), weight: num(g.weight, 0, 1, 0.5), tags: tagList(g.tags) }), 30),

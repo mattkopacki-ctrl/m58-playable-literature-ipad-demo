@@ -128,7 +128,7 @@ test('helpers', () => {
   assert.equal(hashUnit('a', 1), hashUnit('a', 1));
   assert.notEqual(digest({ a: 1, b: 2 }), digest({ a: 2, b: 1 }));
   assert.equal(digest({ a: 1, b: 2 }), digest({ b: 2, a: 1 }));
-  assert.deepEqual(parseOptions('Run [risk, flee]\nStay'), [{ id: 'opt-1', label: 'Run', tags: ['risk', 'flee'] }, { id: 'opt-2', label: 'Stay', tags: [] }]);
+  assert.deepEqual(parseOptions('Run [risk, flee]\nStay'), [{ id: 'opt-1', label: 'Run', tags: ['risk', 'flee'], beliefs: [] }, { id: 'opt-2', label: 'Stay', tags: [], beliefs: [] }]);
   assert.equal(normalize('character', { traits: { openness: 9 } }).traits.openness, 1);
   assert.equal(normalize('inbox', { evidence: 'BOGUS' }).evidence, 'UNREVIEWED');
 });
@@ -258,4 +258,68 @@ test('terminal: tell and believe produce the same events as the GUI', () => {
   assert.ok(b.actions[0].payload.after < 0.9);
   assert.match(runCommand('beliefs ines', { state: s }).out[0], /The house is wrong/);
   assert.match(runCommand('memories ines', { state: s }).out[1], /cellar door/);
+});
+
+import { feasibility } from '../js/core/cognition.mjs';
+
+test('T-025 beliefs enter decisions as explained, replayable terms', () => {
+  const s = replay(seeded());
+  const theo = s.entities.character['character-theo'];
+  const d = decide(theo, SITUATIONS[0], { now: 48, seed: 0 });
+  const bt = d.ranking.find(r => r.optionId === 'opt-1').terms.find(t => t.source === 'belief');
+  assert.ok(bt && bt.value > 0, 'Theo\'s mechanical-explanation belief favours going down');
+  assert.equal(bt.value, 0.64); // (0.9 - 0.5) * 2 * 0.8
+  assert.match(bt.why, /holds ".*" at 0.9; this option presumes it true/);
+  assert.equal(verifyDecision(JSON.parse(JSON.stringify(d))).ok, true);
+  // An unheld claim adds no term.
+  assert.ok(!d.ranking.find(r => r.optionId === 'opt-3').terms.some(t => t.source === 'belief'));
+  // Changing the belief changes the choice score, and only through the belief term.
+  const doubt = { ...theo, beliefs: [{ claim: 'Everything here has a mechanical explanation', confidence: 0.1 }] };
+  const d2 = decide(doubt, SITUATIONS[0], { now: 48, seed: 0 });
+  const t1 = d.ranking.find(r => r.optionId === 'opt-1'), t2 = d2.ranking.find(r => r.optionId === 'opt-1');
+  assert.equal(Math.round((t1.total - t2.total) * 1000) / 1000, 1.28);
+  assert.deepEqual(t1.terms.filter(t => t.source !== 'belief'), t2.terms.filter(t => t.source !== 'belief'));
+  // A stored decision fails verification if its belief input is tampered with.
+  const bad = structuredClone(d); bad.inputs.character.beliefs[0].confidence = 0.2;
+  assert.equal(verifyDecision(bad).ok, false);
+});
+
+test('T-025 belief change from evidence flips a choice end to end', () => {
+  let s = replay(seeded());
+  const sit = { id: 'sit-b', prompt: 'Stay or leave?', tags: [], options: parseOptions('Stay the night {-The house is wrong}\nLeave now {+The house is wrong}') };
+  assert.deepEqual(sit.options[0].beliefs, [{ sign: -1, claim: 'The house is wrong' }]);
+  const pick = () => decide(s.entities.character['character-theo'], sit, { now: 48, seed: 0 }).chosenLabel;
+  for (let i = 0; i < 3; i++) s = apply(s, makeEvent(s.seq + 1, 'belief.update', updateBelief(s.entities.character['character-theo'], 'The house is wrong', { direction: -1, strength: 1, credibility: 1 })));
+  assert.equal(pick(), 'Stay the night');
+  for (let i = 0; i < 8; i++) s = apply(s, makeEvent(s.seq + 1, 'belief.update', updateBelief(s.entities.character['character-theo'], 'The house is wrong', { direction: 1, strength: 1, credibility: 1 })));
+  assert.equal(pick(), 'Leave now');
+});
+
+test('old decision records (no beliefs, no preconditions) still verify', () => {
+  const s = replay(seeded());
+  const { beliefs, place, asleep, ...oldChar } = s.entities.character['character-ines'];
+  const oldSit = { ...SITUATIONS[2] };
+  const rec = decide(oldChar, oldSit, { now: 10, seed: 1 });
+  const legacy = JSON.parse(JSON.stringify(rec)); delete legacy.excluded; delete legacy.inputs.character.beliefs;
+  assert.equal(verifyDecision(legacy).ok, true);
+});
+
+test('action preconditions exclude infeasible options with a logged reason', () => {
+  const s = replay(seeded());
+  const theo = { ...s.entities.character['character-theo'], place: 'Kitchen', asleep: false };
+  const opts = [
+    { id: 'a', label: 'Unlock', tags: ['truth'], requires: { awake: true, places: ['Cellar'], knows: ['key'] } },
+    { id: 'b', label: 'Wait', tags: ['safety'], requires: { awake: true } },
+    { id: 'c', label: 'Sleep on', tags: [], requires: { awake: false } },
+  ];
+  const d = decide(theo, { id: 's', prompt: 'p', tags: [], options: opts }, { now: 1 });
+  assert.equal(d.chosenOptionId, 'b');
+  assert.deepEqual(d.excluded.map(e => e.optionId), ['a', 'c']);
+  assert.match(d.excluded[0].why, /not at Cellar/);
+  assert.equal(verifyDecision(JSON.parse(JSON.stringify(d))).ok, true);
+  assert.match(feasibility({ ...theo, place: 'Cellar' }, opts[0], 1).why, /does not know: key/);
+  assert.equal(feasibility({ ...theo, place: 'Cellar', memories: [{ at: 0, tags: ['key'] }] }, opts[0], 1).ok, true);
+  const asleep = decide({ ...theo, asleep: true }, { id: 's', prompt: 'p', tags: [], options: opts }, { now: 1 });
+  assert.equal(asleep.chosenOptionId, 'c');
+  assert.throws(() => decide({ ...theo, asleep: true }, { id: 's', prompt: 'p', tags: [], options: [opts[1]] }, { now: 1 }), /no feasible action/);
 });

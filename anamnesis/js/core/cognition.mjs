@@ -4,7 +4,8 @@
 import { hashNoise, hashUnit, digest } from './rng.mjs';
 import { VALUES } from './schema.mjs';
 
-export const ENGINE_VERSION = 'anamnesis-decide-2'; // v2: hearsay memories weigh less (seen 1, retold 0.8, told 0.6)
+export const ENGINE_VERSION = 'anamnesis-decide-3'; // v2: hearsay weighs less. v3: belief terms; action preconditions.
+export const BELIEF_COEF = 0.8;          // weight of a fully held belief on an option that presumes it
 export const SOURCE_WEIGHT = { seen: 1, retold: 0.8, told: 0.6 };
 export const ACTR_DECAY = 0.5;          // ACT-R default d (Anderson & Schooler 1991)
 export const RECALL_THRESHOLD = -0.5;   // tuned by feel; documented, not measured
@@ -83,17 +84,50 @@ export function scoreOption(ch, situation, option, ctx) {
     terms.push(term('memory', m.text.slice(0, 60), m.valence * weight * 0.6 * sw,
       `recalled (A=${act.total.toFixed(2)}, cues [${act.overlap.join(', ')}]), valence ${m.valence}${sw !== 1 ? `, source ${m.source} ×${sw}` : ''}`));
   }
+  // Beliefs: an option may presume a claim true (+1) or false (-1). Only beliefs the
+  // character actually holds count; an unheld claim contributes nothing.
+  for (const link of option.beliefs || []) {
+    const held = (ch.beliefs || []).find(b => String(b.claim).trim().toLowerCase() === String(link.claim).trim().toLowerCase());
+    if (!held) continue;
+    const sign = link.sign < 0 ? -1 : 1;
+    const lean = (held.confidence - 0.5) * 2;
+    terms.push(term('belief', held.claim.slice(0, 60), sign * lean * BELIEF_COEF,
+      `holds "${held.claim}" at ${held.confidence}; this option presumes it ${sign > 0 ? 'true' : 'false'} (coef ${BELIEF_COEF})`));
+  }
   const noise = hashNoise(NOISE_SD, ch.id, situation.id, option.id, ctx.seed);
   terms.push(term('noise', 'hashed noise', noise, `deterministic draw for (${ch.id}, ${situation.id}, ${option.id}, seed ${ctx.seed})`));
   const total = terms.reduce((s, t) => s + t.value, 0);
   return { optionId: option.id, label: option.label, total: Math.round(total * 1000) / 1000, terms };
 }
 
+/**
+ * Action preconditions. option.requires = { awake: true|false, places: [..], knows: [tag..] }.
+ * "knows" means the character holds a memory (from any source) carrying that tag by now.
+ */
+export function feasibility(ch, option, now) {
+  const r = option.requires;
+  if (!r) return { ok: true, why: '' };
+  if (r.awake === true && ch.asleep) return { ok: false, why: 'asleep' };
+  if (r.awake === false && !ch.asleep) return { ok: false, why: 'not asleep' };
+  if (r.places?.length && !r.places.includes(ch.place)) return { ok: false, why: `not at ${r.places.join(' or ')} (is at ${ch.place || 'nowhere'})` };
+  for (const tag of r.knows || []) {
+    if (!(ch.memories || []).some(m => m.at <= now && m.tags.includes(tag))) return { ok: false, why: `does not know: ${tag}` };
+  }
+  return { ok: true, why: '' };
+}
+
 /** Decide among options. Returns a full, replayable decision trace. */
 export function decide(ch, situation, { now = 0, seed = 0 } = {}) {
   if (!situation.options?.length) throw new Error('Situation has no options');
   const ctx = { now, seed };
-  const ranking = situation.options.map(o => scoreOption(ch, situation, o, ctx)).sort((a, b) => b.total - a.total || a.optionId.localeCompare(b.optionId));
+  const excluded = [];
+  const open = situation.options.filter(o => {
+    const f = feasibility(ch, o, now);
+    if (!f.ok) excluded.push({ optionId: o.id, label: o.label, why: f.why });
+    return f.ok;
+  });
+  if (!open.length) throw new Error(`${ch.name} has no feasible action: ${excluded.map(e => `${e.label} (${e.why})`).join('; ')}`);
+  const ranking = open.map(o => scoreOption(ch, situation, o, ctx)).sort((a, b) => b.total - a.total || a.optionId.localeCompare(b.optionId));
   const exps = ranking.map(r => Math.exp(r.total * 3));
   const z = exps.reduce((a, b) => a + b, 0);
   ranking.forEach((r, i) => { r.probability = Math.round((exps[i] / z) * 1000) / 1000; });
@@ -106,7 +140,9 @@ export function decide(ch, situation, { now = 0, seed = 0 } = {}) {
     chosenOptionId: chosen.optionId, chosenLabel: chosen.label,
     margin: Math.round(margin * 1000) / 1000,
     confidence: chosen.probability,
-    ranking, inputs, inputsDigest: digest(inputs), outputDigest: digest(ranking),
+    ranking, excluded, inputs, inputsDigest: digest(inputs),
+    // Records made before preconditions existed hash the ranking alone; that still verifies.
+    outputDigest: digest(excluded.length ? { ranking, excluded } : ranking),
   };
 }
 
@@ -119,8 +155,8 @@ export function verifyDecision(record) {
 }
 
 export function snapshotForDecision(ch) {
-  const { id, name, traits, values, goals, fears, memories } = ch;
-  return structuredClone({ id, name, traits, values, goals, fears, memories });
+  const { id, name, traits, values, goals, fears, memories, beliefs = [], place = '', asleep = false } = ch;
+  return structuredClone({ id, name, traits, values, goals, fears, memories, beliefs, place, asleep });
 }
 
 /** One-line human explanation of the top reasons. */
@@ -133,11 +169,15 @@ export function explain(record) {
 
 /** Parse "Label [tag, tag]" lines into options. */
 export function parseOptions(text) {
-  return String(text).split('\n').map(l => l.trim()).filter(Boolean).map((line, i) => {
+  return String(text).split('\n').map(l => l.trim()).filter(Boolean).map((raw, i) => {
+    // Optional trailing {+claim presumed true; -claim presumed false}
+    const b = raw.match(/\{(.*)\}\s*$/);
+    const beliefs = b ? b[1].split(';').map(s => s.trim()).filter(Boolean).map(s => ({ sign: s.startsWith('-') ? -1 : 1, claim: s.replace(/^[+-]\s*/, '') })).filter(x => x.claim) : [];
+    const line = (b ? raw.slice(0, b.index) : raw).trim();
     const m = line.match(/^(.*?)\s*\[(.*)\]\s*$/);
     const label = (m ? m[1] : line).trim() || `Option ${i + 1}`;
     const tags = m ? m[2].split(/[,\s]+/).map(t => t.trim().toLowerCase()).filter(Boolean) : [];
-    return { id: 'opt-' + (i + 1), label, tags };
+    return { id: 'opt-' + (i + 1), label, tags, beliefs };
   });
 }
 
